@@ -1,5 +1,8 @@
 """
-run_benchmark.py — Script principal du benchmark RougeGorge AI Visibility
+run_benchmark.py — Benchmark multi-LLM RougeGorge AI Visibility
+
+Interroge tous les LLMs configurés (Claude, GPT-4o, Gemini, Perplexity)
+et analyse les réponses avec Claude pour mesurer la visibilité de RougeGorge.
 
 Usage : python run_benchmark.py
 """
@@ -13,39 +16,87 @@ from datetime import datetime
 
 load_dotenv()
 
-client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-
-MODEL = "claude-haiku-4-5-20251001"
+# ── Modèle d'analyse (toujours Claude Haiku, économique) ──────────────────────
+ANALYSIS_MODEL = "claude-haiku-4-5-20251001"
 BRAND = "RougeGorge"
 
 
-def load_data():
-    prompts_df = pd.read_csv("prompts.csv")
-    competitors_df = pd.read_csv("competitors.csv")
-    competitors = competitors_df["competitor"].tolist()
-    print(f"✓ {len(prompts_df)} prompts chargés")
-    print(f"✓ {len(competitors)} concurrents à surveiller")
-    return prompts_df, competitors
+# ── Fonctions de requête par LLM ──────────────────────────────────────────────
 
-
-def get_ai_answer(prompt: str) -> str:
-    response = client.messages.create(
-        model=MODEL,
+def query_claude(prompt, api_key):
+    import anthropic as ant
+    client = ant.Anthropic(api_key=api_key)
+    r = client.messages.create(
+        model="claude-haiku-4-5-20251001",
         max_tokens=800,
         messages=[{"role": "user", "content": prompt}]
     )
-    return response.content[0].text
+    return r.content[0].text
 
 
-def analyze_response(prompt: str, response: str, competitors: list) -> dict:
+def query_gpt4o(prompt, api_key):
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key)
+    r = client.chat.completions.create(
+        model="gpt-4o",
+        max_tokens=800,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return r.choices[0].message.content
+
+
+def query_gemini(prompt, api_key):
+    from google import genai
+    client = genai.Client(api_key=api_key)
+    r = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=prompt
+    )
+    return r.text
+
+
+def query_perplexity(prompt, api_key):
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
+    r = client.chat.completions.create(
+        model="sonar",
+        max_tokens=800,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return r.choices[0].message.content
+
+
+# ── Configuration des LLMs disponibles ────────────────────────────────────────
+LLM_CONFIG = {
+    "Claude Haiku":       {"fn": query_claude,      "env": "ANTHROPIC_API_KEY"},
+    "GPT-4o":             {"fn": query_gpt4o,        "env": "OPENAI_API_KEY"},
+    "Gemini 2.0 Flash":   {"fn": query_gemini,       "env": "GOOGLE_API_KEY"},
+    "Perplexity Sonar":   {"fn": query_perplexity,   "env": "PERPLEXITY_API_KEY"},
+}
+
+
+def get_active_llms():
+    """Retourne uniquement les LLMs dont la clé API est configurée."""
+    active = {}
+    for name, config in LLM_CONFIG.items():
+        key = os.getenv(config["env"])
+        if key and not key.startswith("sk-ant-REMPLACE") and not key.startswith("sk-REMPLACE") \
+                and not key.startswith("AI-REMPLACE") and not key.startswith("pplx-REMPLACE"):
+            active[name] = {"fn": config["fn"], "key": key}
+    return active
+
+
+# ── Analyse avec Claude ────────────────────────────────────────────────────────
+
+def analyze_response(prompt, response, competitors, claude_client):
+    """Analyse une réponse LLM pour mesurer la visibilité de RougeGorge."""
     competitors_str = ", ".join(competitors)
 
-    system_prompt = f"""Tu es un expert en analyse de visibilité de marque dans les réponses IA.
+    system = f"""Tu es un expert en visibilité de marque dans les réponses IA.
 Tu analyses des réponses pour mesurer la présence de {BRAND}.
-Tu réponds TOUJOURS avec un JSON valide, sans texte avant ou après.
-Concurrents à surveiller : {competitors_str}"""
+Tu réponds UNIQUEMENT en JSON valide. Concurrents surveillés : {competitors_str}"""
 
-    analysis_request = f"""Analyse cette réponse d'un assistant IA.
+    request = f"""Analyse cette réponse d'un assistant IA.
 
 Question : {prompt}
 Réponse : {response}
@@ -57,99 +108,120 @@ JSON attendu :
   "concurrents_mentionnes": ["marque1", "marque2"],
   "tonalite": "positive" ou "neutre" ou "negative",
   "score_visibilite": 0 à 100,
-  "recommandation": "recommandation courte et actionnable pour améliorer la visibilité GEO de RougeGorge"
+  "recommandation": "action GEO concrète pour améliorer la visibilité de RougeGorge sur ce type de requête"
 }}
-
 Score : 0=absente, 25=brièvement citée, 50=clairement citée, 75=bonne option, 100=premier choix"""
 
-    result = client.messages.create(
-        model=MODEL,
+    r = claude_client.messages.create(
+        model=ANALYSIS_MODEL,
         max_tokens=500,
-        system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": analysis_request}]
+        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": request}]
     )
-
-    raw = result.content[0].text.strip()
+    raw = r.content[0].text.strip()
     if "```" in raw:
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
         raw = raw.strip()
-
     try:
         return json.loads(raw)
-    except json.JSONDecodeError:
-        print("    ⚠️  Erreur parsing JSON, valeurs par défaut utilisées")
-        return {
-            "rougegorge_mentionnee": False,
-            "position_citation": "absente",
-            "concurrents_mentionnes": [],
-            "tonalite": "neutre",
-            "score_visibilite": 0,
-            "recommandation": "Erreur d'analyse"
-        }
+    except Exception:
+        return {"rougegorge_mentionnee": False, "position_citation": "absente",
+                "concurrents_mentionnes": [], "tonalite": "neutre",
+                "score_visibilite": 0, "recommandation": "Erreur d'analyse"}
 
+
+# ── Benchmark principal ────────────────────────────────────────────────────────
 
 def run_benchmark():
-    print("=" * 60)
-    print("🌹 RougeGorge — Benchmark AI Visibility")
+    print("=" * 65)
+    print("🌹 RougeGorge — Benchmark AI Visibility (multi-LLM)")
     print(f"   Date : {datetime.now().strftime('%d/%m/%Y %H:%M')}")
-    print("=" * 60)
+    print("=" * 65)
 
     os.makedirs("data", exist_ok=True)
-    prompts_df, competitors = load_data()
 
-    raw_results = []
-    analyzed_results = []
-    total = len(prompts_df)
+    # Charge les données
+    prompts_df = pd.read_csv("prompts.csv")
+    competitors = pd.read_csv("competitors.csv")["competitor"].tolist()
+    active_llms = get_active_llms()
 
-    for i, row in prompts_df.iterrows():
-        prompt = row["prompt"]
-        category = row.get("category", "général")
+    if not active_llms:
+        print("❌ Aucune clé API configurée. Vérifie ton fichier .env")
+        return
 
-        print(f"\n[{i + 1}/{total}] {category} — {prompt[:70]}...")
-        print("  → Interrogation de Claude...")
-        answer = get_ai_answer(prompt)
+    print(f"\n✓ {len(prompts_df)} prompts | {len(competitors)} concurrents")
+    print(f"✓ LLMs actifs : {', '.join(active_llms.keys())}\n")
 
-        raw_results.append({
-            "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "category": category,
-            "prompt": prompt,
-            "response": answer
-        })
+    # Client Claude pour l'analyse (toujours requis)
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+    if not anthropic_key:
+        print("❌ ANTHROPIC_API_KEY manquante (nécessaire pour l'analyse)")
+        return
+    claude_client = anthropic.Anthropic(api_key=anthropic_key)
 
-        print("  → Analyse...")
-        analysis = analyze_response(prompt, answer, competitors)
+    results = []
+    total = len(prompts_df) * len(active_llms)
+    count = 0
 
-        analyzed_results.append({
-            "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "category": category,
-            "prompt": prompt,
-            "response": answer,
-            "rougegorge_mentionnee": analysis.get("rougegorge_mentionnee", False),
-            "position_citation": analysis.get("position_citation", "absente"),
-            "concurrents_mentionnes": ", ".join(analysis.get("concurrents_mentionnes", [])),
-            "tonalite": analysis.get("tonalite", "neutre"),
-            "score_visibilite": analysis.get("score_visibilite", 0),
-            "recommandation": analysis.get("recommandation", "")
-        })
+    for llm_name, llm in active_llms.items():
+        print(f"\n{'─' * 50}")
+        print(f"🤖 {llm_name}")
+        print(f"{'─' * 50}")
 
-        score = analysis.get("score_visibilite", 0)
-        cited = "✓ Citée" if analysis.get("rougegorge_mentionnee") else "✗ Absente"
-        print(f"  ✅ Score : {score}/100 | {cited}")
+        for _, row in prompts_df.iterrows():
+            prompt = row["prompt"]
+            category = row.get("category", "général")
+            count += 1
 
-    pd.DataFrame(raw_results).to_csv("data/raw_results.csv", index=False, encoding="utf-8")
-    pd.DataFrame(analyzed_results).to_csv("data/analyzed_results.csv", index=False, encoding="utf-8")
+            print(f"[{count}/{total}] {category} — {prompt[:60]}...")
 
-    score_moyen = sum(r["score_visibilite"] for r in analyzed_results) / total
-    mentions = sum(1 for r in analyzed_results if r["rougegorge_mentionnee"])
+            # Interroge le LLM
+            try:
+                answer = llm["fn"](prompt, llm["key"])
+            except Exception as e:
+                print(f"  ⚠️  Erreur {llm_name} : {e}")
+                answer = ""
 
-    print("\n" + "=" * 60)
-    print("✅ Benchmark terminé !")
-    print(f"   Score moyen : {score_moyen:.1f}/100")
-    print(f"   RougeGorge citée dans : {mentions}/{total} réponses")
+            # Analyse avec Claude
+            analysis = analyze_response(prompt, answer, competitors, claude_client) if answer else \
+                {"rougegorge_mentionnee": False, "position_citation": "absente",
+                 "concurrents_mentionnes": [], "tonalite": "neutre",
+                 "score_visibilite": 0, "recommandation": "Erreur de requête"}
+
+            results.append({
+                "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "llm": llm_name,
+                "category": category,
+                "prompt": prompt,
+                "response": answer,
+                "rougegorge_mentionnee": analysis.get("rougegorge_mentionnee", False),
+                "position_citation": analysis.get("position_citation", "absente"),
+                "concurrents_mentionnes": ", ".join(analysis.get("concurrents_mentionnes", [])),
+                "tonalite": analysis.get("tonalite", "neutre"),
+                "score_visibilite": analysis.get("score_visibilite", 0),
+                "recommandation": analysis.get("recommandation", "")
+            })
+
+            score = analysis.get("score_visibilite", 0)
+            cited = "✓" if analysis.get("rougegorge_mentionnee") else "✗"
+            print(f"  → Score : {score}/100 | RG : {cited}")
+
+    # Sauvegarde
+    df = pd.DataFrame(results)
+    df.to_csv("data/raw_results.csv", index=False, encoding="utf-8")
+    df.to_csv("data/analyzed_results.csv", index=False, encoding="utf-8")
+
+    # Résumé par LLM
+    print("\n" + "=" * 65)
+    print("✅ Benchmark terminé ! Résumé par LLM :")
+    for llm_name, grp in df.groupby("llm"):
+        score = grp["score_visibilite"].mean()
+        mentions = grp["rougegorge_mentionnee"].sum()
+        print(f"   {llm_name:<22} Score : {score:5.1f}/100  |  RG citée : {mentions}/{len(grp)}")
     print(f"\n   Lance le dashboard : streamlit run dashboard.py")
-    print("=" * 60)
+    print("=" * 65)
 
 
 if __name__ == "__main__":
