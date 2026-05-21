@@ -1,0 +1,15 @@
+# Clé API — ne JAMAIS mettre en ligne
+.env
+
+# Environnement virtuel Python
+venv/
+
+# Données générées (optionnel : retire ces lignes si tu veux partager les résultats)
+data/
+
+# Fichiers système Mac
+.DS_Store
+
+# Cache Python
+__pycache__/
+*.pyc
