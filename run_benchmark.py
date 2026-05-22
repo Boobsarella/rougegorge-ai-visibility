@@ -1,12 +1,12 @@
 """
 run_benchmark.py — Benchmark multi-LLM RougeGorge AI Visibility
 
-Interroge plusieurs LLMs via OpenRouter (un seul compte, un seul abonnement)
+Interroge Claude et GPT directement via leurs APIs respectives
 et analyse toutes les réponses avec Claude pour mesurer la visibilité de RougeGorge.
 
 Clés nécessaires :
-  - ANTHROPIC_API_KEY  → pour analyser les réponses
-  - OPENROUTER_API_KEY → pour interroger GPT-4o, Gemini, Perplexity, Mistral, etc.
+  - ANTHROPIC_API_KEY → Claude Sonnet 4.6, Claude Opus 4.7 + analyse des réponses
+  - OPENAI_API_KEY    → GPT-5.5, GPT-5.4, GPT-5.4-mini (optionnel)
 
 Usage : python run_benchmark.py
 """
@@ -21,60 +21,39 @@ from datetime import datetime
 
 load_dotenv()
 
-# ── LLMs à tester via OpenRouter ──────────────────────────────────────────────
-# Ajoute ou retire des modèles selon tes besoins.
-# Liste complète : https://openrouter.ai/models
-# LLMs via OpenRouter — https://openrouter.ai/models
-LLMS_OPENROUTER = [
-    {"name": "GPT-4.1 (OpenRouter)",    "model": "openai/gpt-4.1",                          "source": "openrouter"},
-    {"name": "Gemini 2.5 Flash",        "model": "google/gemini-2.5-flash",                  "source": "openrouter"},
-    {"name": "Perplexity Sonar Pro",    "model": "perplexity/sonar-pro",                     "source": "openrouter"},
-    {"name": "Mistral Large",           "model": "mistralai/mistral-large-2411",              "source": "openrouter"},
-    {"name": "Meta Llama 3.3 70B",      "model": "meta-llama/llama-3.3-70b-instruct",        "source": "openrouter"},
+# ── LLMs Claude via Anthropic ──────────────────────────────────────────────────
+LLMS_CLAUDE = [
+    {"name": "Claude Sonnet 4.6", "model": "claude-sonnet-4-6", "source": "anthropic"},
+    {"name": "Claude Opus 4.7",   "model": "claude-opus-4-7",   "source": "anthropic"},
 ]
 
-# LLMs via clé OpenAI directe (derniers modèles GPT-5)
+# ── LLMs OpenAI via clé directe ───────────────────────────────────────────────
 LLMS_OPENAI = [
     {"name": "GPT-5.5",      "model": "gpt-5.5",      "source": "openai"},
     {"name": "GPT-5.4",      "model": "gpt-5.4",      "source": "openai"},
     {"name": "GPT-5.4-mini", "model": "gpt-5.4-mini", "source": "openai"},
 ]
 
-# Claude via Anthropic directe
-LLMS_CLAUDE = [
-    {"name": "Claude Sonnet 4.6", "model": "claude-sonnet-4-6", "source": "anthropic"},
-    {"name": "Claude Opus 4.7",   "model": "claude-opus-4-7",   "source": "anthropic"},
-]
-
 ANALYSIS_MODEL = "claude-haiku-4-5-20251001"
 BRAND = "RougeGorge"
 
 
-def query_llm(prompt, model_id, openrouter_client):
-    """Interroge n'importe quel LLM via OpenRouter."""
-    r = openrouter_client.chat.completions.create(
-        model=model_id,
-        max_tokens=800,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return r.choices[0].message.content
-
-def query_openai_direct(prompt, model_id, openai_client):
-    """Interroge GPT-5.x directement via OpenAI (max_completion_tokens requis)."""
-    r = openai_client.chat.completions.create(
-        model=model_id,
-        max_completion_tokens=800,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return r.choices[0].message.content
-
-def query_claude_direct(prompt, model_id, claude_client):
+def query_claude(prompt, model_id, claude_client):
     """Interroge Claude via l'API Anthropic."""
     r = claude_client.messages.create(
         model=model_id, max_tokens=800,
         messages=[{"role": "user", "content": prompt}]
     )
     return r.content[0].text
+
+def query_openai(prompt, model_id, openai_client):
+    """Interroge GPT via l'API OpenAI (max_completion_tokens requis pour GPT-5.x)."""
+    r = openai_client.chat.completions.create(
+        model=model_id,
+        max_completion_tokens=800,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return r.choices[0].message.content
 
 
 def analyze_response(prompt, response, competitors, claude_client):
@@ -121,26 +100,24 @@ Score : 0=absente, 25=brièvement citée, 50=clairement citée, 75=bonne option,
 
 def run_benchmark():
     print("=" * 65)
-    print("🌹 RougeGorge — Benchmark AI Visibility (multi-LLM via OpenRouter)")
+    print("🌹 RougeGorge — Benchmark AI Visibility")
     print(f"   Date : {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     print("=" * 65)
 
-    anthropic_key  = os.getenv("ANTHROPIC_API_KEY")
-    openrouter_key = os.getenv("OPENROUTER_API_KEY")
-    openai_key     = os.getenv("OPENAI_API_KEY")
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+    openai_key    = os.getenv("OPENAI_API_KEY")
 
     if not anthropic_key:
         print("❌ ANTHROPIC_API_KEY manquante dans .env")
         return
-    if not openrouter_key:
-        print("❌ OPENROUTER_API_KEY manquante dans .env")
-        return
 
-    claude_client     = anthropic.Anthropic(api_key=anthropic_key)
-    openrouter_client = OpenAI(api_key=openrouter_key, base_url="https://openrouter.ai/api/v1")
-    openai_client     = OpenAI(api_key=openai_key) if openai_key else None
+    claude_client  = anthropic.Anthropic(api_key=anthropic_key)
+    openai_client  = OpenAI(api_key=openai_key) if openai_key else None
 
-    all_llms = LLMS_CLAUDE + LLMS_OPENROUTER + (LLMS_OPENAI if openai_client else [])
+    all_llms = LLMS_CLAUDE + (LLMS_OPENAI if openai_client else [])
+
+    if not openai_client:
+        print("ℹ️  OPENAI_API_KEY absente — seuls les modèles Claude seront testés.")
 
     os.makedirs("data", exist_ok=True)
     prompts_df  = pd.read_csv("prompts.csv")
@@ -166,17 +143,14 @@ def run_benchmark():
             print(f"[{count}/{total}] {category} — {prompt[:60]}...")
 
             try:
-                if llm.get("source") == "anthropic":
-                    answer = query_claude_direct(prompt, llm["model"], claude_client)
-                elif llm.get("source") == "openai":
-                    answer = query_openai_direct(prompt, llm["model"], openai_client)
+                if llm["source"] == "anthropic":
+                    answer = query_claude(prompt, llm["model"], claude_client)
                 else:
-                    answer = query_llm(prompt, llm["model"], openrouter_client)
+                    answer = query_openai(prompt, llm["model"], openai_client)
             except Exception as e:
                 print(f"  ⚠️  Erreur : {e}")
                 answer = ""
 
-            # Analyse avec Claude
             if answer:
                 analysis = analyze_response(prompt, answer, competitors, claude_client)
             else:
@@ -185,29 +159,27 @@ def run_benchmark():
                             "score_visibilite": 0, "recommandation": "Erreur de requête"}
 
             results.append({
-                "date":                  datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "llm":                   llm["name"],
-                "category":              category,
-                "prompt":                prompt,
-                "response":              answer,
-                "rougegorge_mentionnee": analysis.get("rougegorge_mentionnee", False),
-                "position_citation":     analysis.get("position_citation", "absente"),
+                "date":                   datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "llm":                    llm["name"],
+                "category":               category,
+                "prompt":                 prompt,
+                "response":               answer,
+                "rougegorge_mentionnee":  analysis.get("rougegorge_mentionnee", False),
+                "position_citation":      analysis.get("position_citation", "absente"),
                 "concurrents_mentionnes": ", ".join(analysis.get("concurrents_mentionnes", [])),
-                "tonalite":              analysis.get("tonalite", "neutre"),
-                "score_visibilite":      analysis.get("score_visibilite", 0),
-                "recommandation":        analysis.get("recommandation", "")
+                "tonalite":               analysis.get("tonalite", "neutre"),
+                "score_visibilite":       analysis.get("score_visibilite", 0),
+                "recommandation":         analysis.get("recommandation", "")
             })
 
-            score  = analysis.get("score_visibilite", 0)
-            cited  = "✓ Citée" if analysis.get("rougegorge_mentionnee") else "✗ Absente"
+            score = analysis.get("score_visibilite", 0)
+            cited = "✓ Citée" if analysis.get("rougegorge_mentionnee") else "✗ Absente"
             print(f"  → Score : {score}/100 | RG : {cited}")
 
-    # Sauvegarde
     df = pd.DataFrame(results)
     df.to_csv("data/raw_results.csv",      index=False, encoding="utf-8")
     df.to_csv("data/analyzed_results.csv", index=False, encoding="utf-8")
 
-    # Résumé par LLM
     print("\n" + "=" * 65)
     print("✅ Benchmark terminé ! Résumé :")
     for llm_name, grp in df.groupby("llm"):

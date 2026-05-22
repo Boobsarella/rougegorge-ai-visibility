@@ -1,9 +1,9 @@
 """
-dashboard.py — Dashboard RougeGorge AI Visibility (v4 — OpenRouter)
+dashboard.py — Dashboard RougeGorge AI Visibility
 
-2 clés seulement :
-  - ANTHROPIC_API_KEY  → analyse les réponses (mesure si RG est citée, tonalité, score)
-  - OPENROUTER_API_KEY → interroge tous les LLMs (GPT-4o, Gemini, Perplexity, Mistral...)
+Clés nécessaires :
+  - ANTHROPIC_API_KEY → Claude Sonnet 4.6, Claude Opus 4.7 + analyse des réponses
+  - OPENAI_API_KEY    → GPT-5.5, GPT-5.4, GPT-5.4-mini
 
 Usage local : streamlit run dashboard.py
 Usage cloud : déployer sur share.streamlit.io
@@ -24,34 +24,22 @@ st.set_page_config(page_title="RougeGorge · AI Visibility", page_icon="🌹", l
 BRAND_COLOR = "#DC3545"
 
 LLM_COLORS = {
-    "ChatGPT (GPT-4o)":    "#10a37f",
-    "Gemini 2.0 Flash":    "#4285f4",
-    "Perplexity Sonar":    "#5436DA",
-    "Mistral Large":       "#FF7000",
-    "Meta Llama 3.3 70B":  "#0064E0",
+    "Claude Sonnet 4.6": "#DC3545",
+    "Claude Opus 4.7":   "#a61c2e",
+    "GPT-5.5":           "#10a37f",
+    "GPT-5.4":           "#1a7a5e",
+    "GPT-5.4-mini":      "#34d399",
 }
 
-# LLMs via OpenRouter (1 clé pour tout)
-# Pour voir tous les modèles : https://openrouter.ai/models
-LLMS_OPENROUTER = [
-    {"name": "GPT-4.1",             "model": "openai/gpt-4.1"},
-    {"name": "Gemini 2.5 Flash",    "model": "google/gemini-2.5-flash"},
-    {"name": "Perplexity Sonar Pro","model": "perplexity/sonar-pro"},
-    {"name": "Mistral Large",       "model": "mistralai/mistral-large-2411"},
-    {"name": "Meta Llama 3.3 70B",  "model": "meta-llama/llama-3.3-70b-instruct"},
-]
-
-# Claude via Anthropic directe (clé ANTHROPIC_API_KEY déjà requise pour l'analyse)
+# ── Modèles disponibles ────────────────────────────────────────────────────────
 LLMS_CLAUDE = [
-    {"name": "Claude Sonnet 4.6", "model": "claude-sonnet-4-6",  "source": "anthropic"},
-    {"name": "Claude Opus 4.7",   "model": "claude-opus-4-7",    "source": "anthropic"},
+    {"name": "Claude Sonnet 4.6", "model": "claude-sonnet-4-6", "source": "anthropic"},
+    {"name": "Claude Opus 4.7",   "model": "claude-opus-4-7",   "source": "anthropic"},
 ]
-
-# LLMs via clé OpenAI directe (derniers modèles GPT-5)
 LLMS_OPENAI = [
-    {"name": "GPT-5.5",      "model": "gpt-5.5"},
-    {"name": "GPT-5.4",      "model": "gpt-5.4"},
-    {"name": "GPT-5.4-mini", "model": "gpt-5.4-mini"},
+    {"name": "GPT-5.5",      "model": "gpt-5.5",      "source": "openai"},
+    {"name": "GPT-5.4",      "model": "gpt-5.4",      "source": "openai"},
+    {"name": "GPT-5.4-mini", "model": "gpt-5.4-mini", "source": "openai"},
 ]
 
 st.markdown("""
@@ -79,31 +67,23 @@ def get_secret(key):
     return val if val and "REMPLACE" not in val else None
 
 
-# ── Fonctions benchmark ────────────────────────────────────────────────────────
-def query_llm(prompt, model_id, openrouter_client):
-    r = openrouter_client.chat.completions.create(
-        model=model_id, max_tokens=800,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return r.choices[0].message.content
-
-def query_openai_direct(prompt, model_id, openai_client):
-    # GPT-5.x utilisent max_completion_tokens (pas max_tokens)
-    r = openai_client.chat.completions.create(
-        model=model_id, max_completion_tokens=800,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return r.choices[0].message.content
-
-def query_claude_direct(prompt, model_id, claude_client):
-    # Interroge Claude via l'API Anthropic (même clé que pour l'analyse)
+# ── Fonctions de requête ───────────────────────────────────────────────────────
+def query_claude(prompt, model_id, claude_client):
     r = claude_client.messages.create(
         model=model_id, max_tokens=800,
         messages=[{"role": "user", "content": prompt}]
     )
     return r.content[0].text
 
+def query_openai(prompt, model_id, openai_client):
+    r = openai_client.chat.completions.create(
+        model=model_id, max_completion_tokens=800,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return r.choices[0].message.content
 
+
+# ── Analyse avec Claude Haiku ──────────────────────────────────────────────────
 def analyze_response(prompt, response, competitors, claude_client):
     competitors_str = ", ".join(competitors)
     system = f"""Tu es un expert en visibilité de marque dans les réponses IA.
@@ -139,12 +119,13 @@ JSON :
                 "score_visibilite": 0, "recommandation": "Erreur d'analyse"}
 
 
-def run_benchmark_streamlit(claude_client, openrouter_client, openai_client, prompts_df, competitors, selected_llms):
-    total  = len(prompts_df) * len(selected_llms)
+# ── Benchmark Streamlit ────────────────────────────────────────────────────────
+def run_benchmark_streamlit(claude_client, openai_client, prompts_df, competitors, selected_llms):
+    total   = len(prompts_df) * len(selected_llms)
     results = []
-    bar    = st.progress(0)
-    status = st.empty()
-    count  = 0
+    bar     = st.progress(0)
+    status  = st.empty()
+    count   = 0
 
     for llm in selected_llms:
         for _, row in prompts_df.iterrows():
@@ -154,12 +135,10 @@ def run_benchmark_streamlit(claude_client, openrouter_client, openai_client, pro
             status.markdown(f"*{prompt[:90]}...*")
 
             try:
-                if llm.get("source") == "anthropic":
-                    answer = query_claude_direct(prompt, llm["model"], claude_client)
-                elif llm.get("source") == "openai":
-                    answer = query_openai_direct(prompt, llm["model"], openai_client)
+                if llm["source"] == "anthropic":
+                    answer = query_claude(prompt, llm["model"], claude_client)
                 else:
-                    answer = query_llm(prompt, llm["model"], openrouter_client)
+                    answer = query_openai(prompt, llm["model"], openai_client)
             except Exception as e:
                 answer = ""
                 st.warning(f"{llm['name']} : {e}")
@@ -192,14 +171,11 @@ def run_benchmark_streamlit(claude_client, openrouter_client, openai_client, pro
 with st.sidebar:
     st.markdown("### ⚙️ Paramètres")
 
-    anthropic_key  = get_secret("ANTHROPIC_API_KEY")
-    openrouter_key = get_secret("OPENROUTER_API_KEY")
+    anthropic_key = get_secret("ANTHROPIC_API_KEY")
+    openai_key    = get_secret("OPENAI_API_KEY")
 
     if not anthropic_key:
         st.error("ANTHROPIC_API_KEY manquante dans .env")
-        st.stop()
-    if not openrouter_key:
-        st.error("OPENROUTER_API_KEY manquante dans .env\nObtenir : openrouter.ai/keys")
         st.stop()
 
     selected_llms = []
@@ -209,17 +185,13 @@ with st.sidebar:
         if st.checkbox(llm["name"], value=True, key=f"chk_{llm['name']}"):
             selected_llms.append(llm)
 
-    st.markdown("**Via OpenRouter :**")
-    for llm in LLMS_OPENROUTER:
-        if st.checkbox(llm["name"], value=True, key=f"chk_{llm['name']}"):
-            selected_llms.append({**llm, "source": "openrouter"})
-
-    openai_key = get_secret("OPENAI_API_KEY")
     if openai_key:
-        st.markdown("**Via OpenAI (direct) :**")
+        st.markdown("**OpenAI :**")
         for llm in LLMS_OPENAI:
             if st.checkbox(llm["name"], value=True, key=f"chk_{llm['name']}"):
-                selected_llms.append({**llm, "source": "openai"})
+                selected_llms.append(llm)
+    else:
+        st.caption("_Ajoute OPENAI_API_KEY pour tester GPT-5_")
 
     st.divider()
     n = len(pd.read_csv("prompts.csv")) if os.path.exists("prompts.csv") else 0
@@ -228,14 +200,12 @@ with st.sidebar:
     if st.button("🚀 Lancer le benchmark", type="primary", use_container_width=True,
                  disabled=not selected_llms):
         try:
-            claude_client     = anthropic.Anthropic(api_key=anthropic_key)
-            openrouter_client = OpenAI(api_key=openrouter_key,
-                                       base_url="https://openrouter.ai/api/v1")
-            openai_client     = OpenAI(api_key=openai_key) if openai_key else None
-            prompts_df  = pd.read_csv("prompts.csv")
-            competitors = pd.read_csv("competitors.csv")["competitor"].tolist()
+            claude_client = anthropic.Anthropic(api_key=anthropic_key)
+            openai_client = OpenAI(api_key=openai_key) if openai_key else None
+            prompts_df    = pd.read_csv("prompts.csv")
+            competitors   = pd.read_csv("competitors.csv")["competitor"].tolist()
             df_new = run_benchmark_streamlit(
-                claude_client, openrouter_client, openai_client, prompts_df, competitors, selected_llms
+                claude_client, openai_client, prompts_df, competitors, selected_llms
             )
             os.makedirs("data", exist_ok=True)
             df_new.to_csv("data/analyzed_results.csv", index=False, encoding="utf-8")
@@ -257,7 +227,7 @@ elif os.path.exists(DATA_FILE):
     df = pd.read_csv(DATA_FILE)
 else:
     st.markdown("## 🌹 RougeGorge — AI Visibility Monitor")
-    st.info("Configure tes clés API dans `.env` puis clique sur **Lancer le benchmark**.")
+    st.info("Clique sur **Lancer le benchmark** dans le menu à gauche.")
     st.stop()
 
 if df.empty:
@@ -301,17 +271,15 @@ st.divider()
 # ── COMPARAISON ENTRE LLMs ────────────────────────────────────────────────────
 if len(available_llms) > 1:
     st.markdown("### 🤖 Comparaison entre les IA")
-
     llm_stats = (df.groupby("llm")
                    .agg(score_moyen=("score_visibilite", "mean"),
                         taux_citation=("rougegorge_mentionnee", lambda x: round(x.mean() * 100, 1)))
                    .reset_index().sort_values("score_moyen", ascending=False))
-
     color_map = {row["llm"]: LLM_COLORS.get(row["llm"], "#888") for _, row in llm_stats.iterrows()}
 
     col_a, col_b = st.columns(2)
     with col_a:
-        st.markdown("**Score moyen de visibilité par IA**")
+        st.markdown("**Score moyen de visibilité**")
         fig = px.bar(llm_stats, x="llm", y="score_moyen", text="score_moyen",
                      color="llm", color_discrete_map=color_map)
         fig.update_traces(texttemplate="%{text:.1f}", textposition="outside")
@@ -321,7 +289,7 @@ if len(available_llms) > 1:
         st.plotly_chart(fig, use_container_width=True)
 
     with col_b:
-        st.markdown("**Taux de citation de RougeGorge (%)**")
+        st.markdown("**Taux de citation de RougeGorge**")
         fig2 = px.bar(llm_stats, x="llm", y="taux_citation", text="taux_citation",
                       color="llm", color_discrete_map=color_map)
         fig2.update_traces(texttemplate="%{text:.0f}%", textposition="outside")
@@ -331,7 +299,7 @@ if len(available_llms) > 1:
         st.plotly_chart(fig2, use_container_width=True)
 
     st.markdown("**Heatmap — score par IA et par catégorie**")
-    heat = df.groupby(["category", "llm"])["score_visibilite"].mean().reset_index()
+    heat  = df.groupby(["category", "llm"])["score_visibilite"].mean().reset_index()
     pivot = heat.pivot(index="category", columns="llm", values="score_visibilite").fillna(0)
     fig_h = px.imshow(pivot, color_continuous_scale=["#fee2e2", "#fef3c7", "#dcfce7"],
                       zmin=0, zmax=100, text_auto=".0f", aspect="auto")
@@ -344,7 +312,7 @@ if len(available_llms) > 1:
 # ── JAUGE + TONALITÉ ───────────────────────────────────────────────────────────
 col_g, col_t = st.columns([1, 1])
 with col_g:
-    st.markdown("**Score global (toutes IA)**")
+    st.markdown("**Score global**")
     color = "#22c55e" if score_moyen >= 60 else "#f59e0b" if score_moyen >= 30 else "#ef4444"
     fig_gauge = go.Figure(go.Indicator(
         mode="gauge+number", value=round(score_moyen, 1),
