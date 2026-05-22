@@ -31,14 +31,20 @@ LLM_COLORS = {
     "Meta Llama 3.3 70B":  "#0064E0",
 }
 
-# Liste des LLMs testés via OpenRouter.
-# Pour voir tous les modèles disponibles : https://openrouter.ai/models
-LLMS_TO_TEST = [
-    {"name": "ChatGPT (GPT-4.1)",       "model": "openai/gpt-4.1"},
+# LLMs via OpenRouter (1 clé pour tout)
+# Pour voir tous les modèles : https://openrouter.ai/models
+LLMS_OPENROUTER = [
+    {"name": "GPT-4.1 (OpenRouter)",    "model": "openai/gpt-4.1"},
     {"name": "Gemini 2.5 Flash",        "model": "google/gemini-2.5-flash"},
     {"name": "Perplexity Sonar Pro",    "model": "perplexity/sonar-pro"},
     {"name": "Mistral Large",           "model": "mistralai/mistral-large-2411"},
     {"name": "Meta Llama 3.3 70B",      "model": "meta-llama/llama-3.3-70b-instruct"},
+]
+
+# LLMs via clé OpenAI directe (o3 et o4-mini non disponibles sur OpenRouter)
+LLMS_OPENAI = [
+    {"name": "o3",      "model": "o3"},
+    {"name": "o4-mini", "model": "o4-mini"},
 ]
 
 st.markdown("""
@@ -70,6 +76,14 @@ def get_secret(key):
 def query_llm(prompt, model_id, openrouter_client):
     r = openrouter_client.chat.completions.create(
         model=model_id, max_tokens=800,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return r.choices[0].message.content
+
+def query_openai_reasoning(prompt, model_id, openai_client):
+    # o3 et o4-mini utilisent max_completion_tokens (pas max_tokens)
+    r = openai_client.chat.completions.create(
+        model=model_id, max_completion_tokens=800,
         messages=[{"role": "user", "content": prompt}]
     )
     return r.choices[0].message.content
@@ -110,7 +124,7 @@ JSON :
                 "score_visibilite": 0, "recommandation": "Erreur d'analyse"}
 
 
-def run_benchmark_streamlit(claude_client, openrouter_client, prompts_df, competitors, selected_llms):
+def run_benchmark_streamlit(claude_client, openrouter_client, openai_client, prompts_df, competitors, selected_llms):
     total  = len(prompts_df) * len(selected_llms)
     results = []
     bar    = st.progress(0)
@@ -125,7 +139,10 @@ def run_benchmark_streamlit(claude_client, openrouter_client, prompts_df, compet
             status.markdown(f"*{prompt[:90]}...*")
 
             try:
-                answer = query_llm(prompt, llm["model"], openrouter_client)
+                if llm.get("source") == "openai":
+                    answer = query_openai_reasoning(prompt, llm["model"], openai_client)
+                else:
+                    answer = query_llm(prompt, llm["model"], openrouter_client)
             except Exception as e:
                 answer = ""
                 st.warning(f"{llm['name']} : {e}")
@@ -168,12 +185,19 @@ with st.sidebar:
         st.error("OPENROUTER_API_KEY manquante dans .env\nObtenir : openrouter.ai/keys")
         st.stop()
 
-    st.markdown("**LLMs à tester :**")
     selected_llms = []
-    for llm in LLMS_TO_TEST:
-        color = LLM_COLORS.get(llm["name"], "#888")
+
+    st.markdown("**Via OpenRouter :**")
+    for llm in LLMS_OPENROUTER:
         if st.checkbox(llm["name"], value=True, key=f"chk_{llm['name']}"):
-            selected_llms.append(llm)
+            selected_llms.append({**llm, "source": "openrouter"})
+
+    openai_key = get_secret("OPENAI_API_KEY")
+    if openai_key:
+        st.markdown("**Via OpenAI (direct) :**")
+        for llm in LLMS_OPENAI:
+            if st.checkbox(llm["name"], value=True, key=f"chk_{llm['name']}"):
+                selected_llms.append({**llm, "source": "openai"})
 
     st.divider()
     n = len(pd.read_csv("prompts.csv")) if os.path.exists("prompts.csv") else 0
@@ -185,10 +209,11 @@ with st.sidebar:
             claude_client     = anthropic.Anthropic(api_key=anthropic_key)
             openrouter_client = OpenAI(api_key=openrouter_key,
                                        base_url="https://openrouter.ai/api/v1")
+            openai_client     = OpenAI(api_key=openai_key) if openai_key else None
             prompts_df  = pd.read_csv("prompts.csv")
             competitors = pd.read_csv("competitors.csv")["competitor"].tolist()
             df_new = run_benchmark_streamlit(
-                claude_client, openrouter_client, prompts_df, competitors, selected_llms
+                claude_client, openrouter_client, openai_client, prompts_df, competitors, selected_llms
             )
             os.makedirs("data", exist_ok=True)
             df_new.to_csv("data/analyzed_results.csv", index=False, encoding="utf-8")

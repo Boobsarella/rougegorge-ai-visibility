@@ -24,14 +24,19 @@ load_dotenv()
 # ── LLMs à tester via OpenRouter ──────────────────────────────────────────────
 # Ajoute ou retire des modèles selon tes besoins.
 # Liste complète : https://openrouter.ai/models
-# Liste des LLMs testés via OpenRouter.
-# Pour voir tous les modèles disponibles : https://openrouter.ai/models
-LLMS_TO_TEST = [
-    {"name": "ChatGPT (GPT-4.1)",       "model": "openai/gpt-4.1"},
-    {"name": "Gemini 2.5 Flash",        "model": "google/gemini-2.5-flash"},
-    {"name": "Perplexity Sonar Pro",    "model": "perplexity/sonar-pro"},
-    {"name": "Mistral Large",           "model": "mistralai/mistral-large-2411"},
-    {"name": "Meta Llama 3.3 70B",      "model": "meta-llama/llama-3.3-70b-instruct"},
+# LLMs via OpenRouter — https://openrouter.ai/models
+LLMS_OPENROUTER = [
+    {"name": "GPT-4.1 (OpenRouter)",    "model": "openai/gpt-4.1",                          "source": "openrouter"},
+    {"name": "Gemini 2.5 Flash",        "model": "google/gemini-2.5-flash",                  "source": "openrouter"},
+    {"name": "Perplexity Sonar Pro",    "model": "perplexity/sonar-pro",                     "source": "openrouter"},
+    {"name": "Mistral Large",           "model": "mistralai/mistral-large-2411",              "source": "openrouter"},
+    {"name": "Meta Llama 3.3 70B",      "model": "meta-llama/llama-3.3-70b-instruct",        "source": "openrouter"},
+]
+
+# LLMs via clé OpenAI directe (o3/o4-mini non dispo sur OpenRouter)
+LLMS_OPENAI = [
+    {"name": "o3",      "model": "o3",      "source": "openai"},
+    {"name": "o4-mini", "model": "o4-mini", "source": "openai"},
 ]
 
 ANALYSIS_MODEL = "claude-haiku-4-5-20251001"
@@ -43,6 +48,15 @@ def query_llm(prompt, model_id, openrouter_client):
     r = openrouter_client.chat.completions.create(
         model=model_id,
         max_tokens=800,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return r.choices[0].message.content
+
+def query_openai_reasoning(prompt, model_id, openai_client):
+    """Interroge o3/o4-mini directement via OpenAI (max_completion_tokens requis)."""
+    r = openai_client.chat.completions.create(
+        model=model_id,
+        max_completion_tokens=800,
         messages=[{"role": "user", "content": prompt}]
     )
     return r.choices[0].message.content
@@ -96,9 +110,9 @@ def run_benchmark():
     print(f"   Date : {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     print("=" * 65)
 
-    # Vérifie les clés API
-    anthropic_key   = os.getenv("ANTHROPIC_API_KEY")
-    openrouter_key  = os.getenv("OPENROUTER_API_KEY")
+    anthropic_key  = os.getenv("ANTHROPIC_API_KEY")
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    openai_key     = os.getenv("OPENAI_API_KEY")
 
     if not anthropic_key:
         print("❌ ANTHROPIC_API_KEY manquante dans .env")
@@ -107,25 +121,24 @@ def run_benchmark():
         print("❌ OPENROUTER_API_KEY manquante dans .env")
         return
 
-    # Initialise les clients
-    claude_client = anthropic.Anthropic(api_key=anthropic_key)
-    openrouter_client = OpenAI(
-        api_key=openrouter_key,
-        base_url="https://openrouter.ai/api/v1"
-    )
+    claude_client     = anthropic.Anthropic(api_key=anthropic_key)
+    openrouter_client = OpenAI(api_key=openrouter_key, base_url="https://openrouter.ai/api/v1")
+    openai_client     = OpenAI(api_key=openai_key) if openai_key else None
+
+    all_llms = LLMS_OPENROUTER + (LLMS_OPENAI if openai_client else [])
 
     os.makedirs("data", exist_ok=True)
     prompts_df  = pd.read_csv("prompts.csv")
     competitors = pd.read_csv("competitors.csv")["competitor"].tolist()
 
-    total = len(prompts_df) * len(LLMS_TO_TEST)
-    print(f"\n✓ {len(prompts_df)} prompts · {len(LLMS_TO_TEST)} LLMs · {total} requêtes au total")
-    print(f"✓ LLMs : {', '.join(l['name'] for l in LLMS_TO_TEST)}\n")
+    total = len(prompts_df) * len(all_llms)
+    print(f"\n✓ {len(prompts_df)} prompts · {len(all_llms)} LLMs · {total} requêtes au total")
+    print(f"✓ LLMs : {', '.join(l['name'] for l in all_llms)}\n")
 
     results = []
     count = 0
 
-    for llm in LLMS_TO_TEST:
+    for llm in all_llms:
         print(f"\n{'─' * 55}")
         print(f"🤖 {llm['name']}  ({llm['model']})")
         print(f"{'─' * 55}")
@@ -137,9 +150,11 @@ def run_benchmark():
 
             print(f"[{count}/{total}] {category} — {prompt[:60]}...")
 
-            # Interroge le LLM
             try:
-                answer = query_llm(prompt, llm["model"], openrouter_client)
+                if llm.get("source") == "openai":
+                    answer = query_openai_reasoning(prompt, llm["model"], openai_client)
+                else:
+                    answer = query_llm(prompt, llm["model"], openrouter_client)
             except Exception as e:
                 print(f"  ⚠️  Erreur : {e}")
                 answer = ""
