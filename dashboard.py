@@ -43,10 +43,24 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap');
 
-html, body, [class*="css"], .stApp, .stMarkdown, .stButton>button,
-p, span, div, h1, h2, h3, h4, h5, h6, label, input, select, textarea,
-.stDataFrame, [data-testid], .stSelectbox, .stTextInput, .stCheckbox,
-.stTabs [data-baseweb="tab"] {
+/* Poppins sur le texte — exclut les polices d'icônes Streamlit (Material Icons) */
+body, .stApp,
+p, h1, h2, h3, h4, h5, h6,
+.stMarkdown p, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3,
+.stMarkdown h4, .stMarkdown li, .stMarkdown td, .stMarkdown th,
+.stButton > button,
+label,
+input[type="text"], input[type="number"], input[type="search"], textarea,
+.stSelectbox [data-baseweb="select"] *,
+.stTextInput input,
+.stNumberInput input,
+[data-testid="stMetricValue"],
+[data-testid="stMetricLabel"],
+[data-testid="stCaption"],
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] label,
+[data-baseweb="tab"] > div,
+[data-baseweb="menu"] li {
     font-family: 'Poppins', sans-serif !important;
 }
 [data-testid="stMetricValue"] {
@@ -131,9 +145,11 @@ def query_claude(prompt, model_id, client):
     return r.content[0].text
 
 def query_openai(prompt, model_id, client):
-    r = client.chat.completions.create(
-        model=model_id, max_completion_tokens=800,
-        messages=[{"role": "user", "content": prompt}])
+    kwargs = dict(model=model_id, messages=[{"role": "user", "content": prompt}])
+    try:
+        r = client.chat.completions.create(**kwargs, max_completion_tokens=800)
+    except Exception:
+        r = client.chat.completions.create(**kwargs, max_tokens=800)
     return r.choices[0].message.content
 
 
