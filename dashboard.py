@@ -21,12 +21,18 @@ CATEGORIES  = [
     "durabilite", "autre",
 ]
 LLM_COLORS = {
-    "Claude Sonnet 4.6": "#DC3545",
-    "Claude Opus 4.7":   "#a61c2e",
-    "GPT-5.5":           "#10a37f",
-    "GPT-5.4":           "#1a7a5e",
-    "GPT-5.4-mini":      "#34d399",
+    "Claude Sonnet 4.6":  "#DC3545",
+    "Claude Opus 4.7":    "#a61c2e",
+    "GPT-5.5":            "#10a37f",
+    "GPT-5.4":            "#1a7a5e",
+    "GPT-5.4-mini":       "#34d399",
+    "GPT-4o Web":         "#0ea5e9",
+    "GPT-5 Search":       "#0369a1",
+    "Perplexity Sonar Pro":"#7c3aed",
+    "Perplexity Sonar":   "#a78bfa",
 }
+
+# ── Modèles ────────────────────────────────────────────────────────────────────
 LLMS_CLAUDE = [
     {"name": "Claude Sonnet 4.6", "model": "claude-sonnet-4-6", "source": "anthropic"},
     {"name": "Claude Opus 4.7",   "model": "claude-opus-4-7",   "source": "anthropic"},
@@ -35,6 +41,14 @@ LLMS_OPENAI = [
     {"name": "GPT-5.5",      "model": "gpt-5.5",      "source": "openai"},
     {"name": "GPT-5.4",      "model": "gpt-5.4",      "source": "openai"},
     {"name": "GPT-5.4-mini", "model": "gpt-5.4-mini", "source": "openai"},
+]
+LLMS_OPENAI_SEARCH = [
+    {"name": "GPT-4o Web",   "model": "gpt-4o-search-preview", "source": "openai"},
+    {"name": "GPT-5 Search", "model": "gpt-5-search-api",      "source": "openai"},
+]
+LLMS_PERPLEXITY = [
+    {"name": "Perplexity Sonar Pro", "model": "sonar-pro", "source": "perplexity"},
+    {"name": "Perplexity Sonar",     "model": "sonar",     "source": "perplexity"},
 ]
 
 
@@ -113,10 +127,16 @@ def get_secret(key):
     return val if val and "REMPLACE" not in val else None
 
 
-anthropic_key = get_secret("ANTHROPIC_API_KEY")
-openai_key    = get_secret("OPENAI_API_KEY")
-claude_client = anthropic.Anthropic(api_key=anthropic_key) if anthropic_key else None
-openai_client = OpenAI(api_key=openai_key)                 if openai_key    else None
+anthropic_key    = get_secret("ANTHROPIC_API_KEY")
+openai_key       = get_secret("OPENAI_API_KEY")
+perplexity_key   = get_secret("PERPLEXITY_API_KEY")
+
+claude_client     = anthropic.Anthropic(api_key=anthropic_key) if anthropic_key  else None
+openai_client     = OpenAI(api_key=openai_key)                 if openai_key     else None
+perplexity_client = OpenAI(
+    api_key=perplexity_key,
+    base_url="https://api.perplexity.ai"
+) if perplexity_key else None
 
 
 # ── Concurrents ────────────────────────────────────────────────────────────────
@@ -151,6 +171,21 @@ def query_openai(prompt, model_id, client):
     except Exception:
         r = client.chat.completions.create(**kwargs, max_tokens=800)
     return r.choices[0].message.content
+
+def query_perplexity(prompt, model_id, client):
+    r = client.chat.completions.create(
+        model=model_id, max_tokens=800,
+        messages=[{"role": "user", "content": prompt}])
+    return r.choices[0].message.content
+
+def run_llm(prompt, llm):
+    """Route vers le bon client selon la source du LLM."""
+    if llm["source"] == "anthropic":
+        return query_claude(prompt, llm["model"], claude_client)
+    elif llm["source"] == "perplexity":
+        return query_perplexity(prompt, llm["model"], perplexity_client)
+    else:
+        return query_openai(prompt, llm["model"], openai_client)
 
 
 # ── Analyse avec Claude Haiku ──────────────────────────────────────────────────
@@ -222,9 +257,7 @@ def run_benchmark_streamlit(selected_prompts_df, selected_llms):
             status.markdown(f"*{str(prompt)[:90]}...*")
 
             try:
-                answer = (query_claude(prompt, llm["model"], claude_client)
-                          if llm["source"] == "anthropic"
-                          else query_openai(prompt, llm["model"], openai_client))
+                answer = run_llm(prompt, llm)
             except Exception as e:
                 answer = ""
                 st.warning(f"{llm['name']} : {e}")
@@ -305,9 +338,7 @@ def run_single_question(prompt, selected_llms):
         prog.progress((i + 1) / len(selected_llms), text=f"Test sur {llm['name']}...")
         error_msg = ""
         try:
-            answer = (query_claude(prompt, llm["model"], claude_client)
-                      if llm["source"] == "anthropic"
-                      else query_openai(prompt, llm["model"], openai_client))
+            answer = run_llm(prompt, llm)
         except Exception as e:
             answer = ""
             error_msg = str(e)
@@ -348,8 +379,12 @@ with st.sidebar:
             selected_llms.append(llm)
 
     if openai_key:
-        st.markdown("**OpenAI :**")
+        st.markdown("**OpenAI — base :**")
         for llm in LLMS_OPENAI:
+            if st.checkbox(llm["name"], value=True, key=f"chk_{llm['name']}"):
+                selected_llms.append(llm)
+        st.markdown("**OpenAI — recherche web 🔍 :**")
+        for llm in LLMS_OPENAI_SEARCH:
             if st.checkbox(llm["name"], value=True, key=f"chk_{llm['name']}"):
                 selected_llms.append(llm)
         with st.expander("Diagnostic OpenAI"):
@@ -367,6 +402,14 @@ with st.sidebar:
                     st.error(str(e))
     else:
         st.caption("_Ajoute OPENAI_API_KEY pour tester GPT-5_")
+
+    if perplexity_key:
+        st.markdown("**Perplexity (web natif) 🔍 :**")
+        for llm in LLMS_PERPLEXITY:
+            if st.checkbox(llm["name"], value=True, key=f"chk_{llm['name']}"):
+                selected_llms.append(llm)
+    else:
+        st.caption("_Ajoute PERPLEXITY_API_KEY pour tester Perplexity_")
 
     st.divider()
 
