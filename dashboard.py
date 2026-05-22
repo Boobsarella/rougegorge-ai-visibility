@@ -238,6 +238,50 @@ def run_benchmark_streamlit(selected_prompts_df, selected_llms):
     return pd.DataFrame(results)
 
 
+# ── Suggestions d'articles de blog ───────────────────────────────────────────
+def generate_blog_suggestions(prompt, results, client):
+    valid = [r for r in results if not r.get("error") and r.get("response")]
+    if not valid:
+        return []
+    summary = "\n".join(
+        f"- {r['llm']}: {r['score']}/100 — RG {'citée' if r['cited'] else 'absente'} "
+        f"({r['position']})"
+        for r in valid)
+    cited_anywhere = any(r["cited"] for r in valid)
+    r = client.messages.create(
+        model="claude-haiku-4-5-20251001", max_tokens=1200,
+        messages=[{"role": "user", "content": f"""Tu es expert GEO (Generative Engine Optimization) pour RougeGorge, marque de lingerie belge/française.
+
+Question testée : "{prompt}"
+Visibilité RougeGorge par IA :
+{summary}
+
+RougeGorge est {"parfois citée mais" if cited_anywhere else "peu ou pas citée —"} il faut améliorer sa présence sur ce type de requête.
+
+Propose 4 articles de blog que RougeGorge devrait produire pour apparaître dans les réponses IA sur cette requête.
+Chaque article doit être : informatif, factuel, citable par les IA, avec des données concrètes.
+
+Réponds UNIQUEMENT en JSON :
+{{"articles": [
+  {{
+    "titre": "...",
+    "angle": "en 1 phrase : le positionnement éditorial de l'article",
+    "mots_cles": ["...", "...", "..."],
+    "impact": "fort" ou "moyen" ou "faible",
+    "pourquoi": "en 1 phrase : pourquoi cet article ferait citer RougeGorge par les IA"
+  }}
+]}}"""}])
+    raw = r.content[0].text.strip()
+    if "```" in raw:
+        raw = raw.split("```")[1]
+        if raw.startswith("json"): raw = raw[4:]
+        raw = raw.strip()
+    try:
+        return json.loads(raw)["articles"]
+    except Exception:
+        return []
+
+
 # ── Test d'une seule question ──────────────────────────────────────────────────
 def run_single_question(prompt, selected_llms):
     results, prog = [], st.progress(0)
@@ -292,6 +336,19 @@ with st.sidebar:
         for llm in LLMS_OPENAI:
             if st.checkbox(llm["name"], value=True, key=f"chk_{llm['name']}"):
                 selected_llms.append(llm)
+        with st.expander("Diagnostic OpenAI"):
+            if st.button("Lister mes modèles disponibles", use_container_width=True):
+                try:
+                    models = openai_client.models.list()
+                    gpt_ids = sorted(
+                        m.id for m in models.data
+                        if any(x in m.id for x in ("gpt", "o1", "o3", "o4")))
+                    if gpt_ids:
+                        st.code("\n".join(gpt_ids))
+                    else:
+                        st.info("Aucun modèle GPT trouvé.")
+                except Exception as e:
+                    st.error(str(e))
     else:
         st.caption("_Ajoute OPENAI_API_KEY pour tester GPT-5_")
 
@@ -470,6 +527,49 @@ with tab_questions:
                                 r["response"][:800]
                                 + ("..." if len(r["response"]) > 800 else ""))
                 st.divider()
+
+    # ── Articles de blog suggérés ──────────────────────────────────────────────
+    if st.session_state.get("single_results"):
+        valid_r = [r for r in st.session_state["single_results"]
+                   if not r.get("error") and r.get("response")]
+        if valid_r:
+            st.markdown("---")
+            st.markdown("### 📝 Articles de blog pour améliorer cette visibilité")
+            st.caption("Contenus GEO à produire pour que les IA citent RougeGorge sur cette requête")
+
+            if st.button("Générer les suggestions d'articles", key="btn_blog",
+                         use_container_width=False):
+                with st.spinner("Génération en cours..."):
+                    try:
+                        arts = generate_blog_suggestions(
+                            st.session_state.get("single_prompt", ""),
+                            st.session_state["single_results"], claude_client)
+                        st.session_state["blog_articles"] = arts
+                        st.session_state["blog_for"] = st.session_state.get("single_prompt")
+                    except Exception as e:
+                        st.error(f"Erreur : {e}")
+
+            if (st.session_state.get("blog_articles") and
+                    st.session_state.get("blog_for") == st.session_state.get("single_prompt")):
+                impact_color = {"fort": "#16a34a", "moyen": "#d97706", "faible": "#94a3b8"}
+                cols_b = st.columns(2)
+                for i, art in enumerate(st.session_state["blog_articles"]):
+                    col = cols_b[i % 2]
+                    ic  = impact_color.get(art.get("impact", "moyen"), "#888")
+                    with col:
+                        st.markdown(f"""<div class="suggest-card">
+<div class="suggest-title">{art.get("titre","")}</div>
+<div class="suggest-desc" style="margin-top:4px">{art.get("angle","")}</div>
+<div style="margin-top:8px;font-size:0.8em;color:#555">
+  🔑 {' · '.join(art.get("mots_cles",[]))}
+</div>
+<div style="margin-top:6px;font-size:0.8em;font-weight:600;color:{ic}">
+  Impact estimé : {art.get("impact","?")}
+</div>
+<div style="margin-top:4px;font-size:0.78em;color:#6b7280;font-style:italic">
+  {art.get("pourquoi","")}
+</div>
+</div>""", unsafe_allow_html=True)
 
     st.divider()
 
