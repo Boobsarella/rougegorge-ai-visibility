@@ -31,12 +31,14 @@ LLM_COLORS = {
     "Meta Llama 3.3 70B":  "#0064E0",
 }
 
+# Liste des LLMs testés via OpenRouter.
+# Pour voir tous les modèles disponibles : https://openrouter.ai/models
 LLMS_TO_TEST = [
-    {"name": "ChatGPT (GPT-4o)",   "model": "openai/gpt-4o"},
-    {"name": "Gemini 2.0 Flash",   "model": "google/gemini-2.0-flash-001"},
-    {"name": "Perplexity Sonar",   "model": "perplexity/sonar"},
-    {"name": "Mistral Large",      "model": "mistralai/mistral-large"},
-    {"name": "Meta Llama 3.3 70B", "model": "meta-llama/llama-3.3-70b-instruct"},
+    {"name": "ChatGPT (GPT-4.1)",       "model": "openai/gpt-4.1"},
+    {"name": "Gemini 2.5 Flash",        "model": "google/gemini-2.5-flash"},
+    {"name": "Perplexity Sonar Pro",    "model": "perplexity/sonar-pro"},
+    {"name": "Mistral Large",           "model": "mistralai/mistral-large-2411"},
+    {"name": "Meta Llama 3.3 70B",      "model": "meta-llama/llama-3.3-70b-instruct"},
 ]
 
 st.markdown("""
