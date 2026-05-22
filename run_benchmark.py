@@ -40,6 +40,12 @@ LLMS_OPENAI = [
     {"name": "GPT-5.4-mini", "model": "gpt-5.4-mini", "source": "openai"},
 ]
 
+# Claude via Anthropic directe
+LLMS_CLAUDE = [
+    {"name": "Claude Sonnet 4.6", "model": "claude-sonnet-4-6", "source": "anthropic"},
+    {"name": "Claude Opus 4.7",   "model": "claude-opus-4-7",   "source": "anthropic"},
+]
+
 ANALYSIS_MODEL = "claude-haiku-4-5-20251001"
 BRAND = "RougeGorge"
 
@@ -61,6 +67,14 @@ def query_openai_direct(prompt, model_id, openai_client):
         messages=[{"role": "user", "content": prompt}]
     )
     return r.choices[0].message.content
+
+def query_claude_direct(prompt, model_id, claude_client):
+    """Interroge Claude via l'API Anthropic."""
+    r = claude_client.messages.create(
+        model=model_id, max_tokens=800,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return r.content[0].text
 
 
 def analyze_response(prompt, response, competitors, claude_client):
@@ -126,7 +140,7 @@ def run_benchmark():
     openrouter_client = OpenAI(api_key=openrouter_key, base_url="https://openrouter.ai/api/v1")
     openai_client     = OpenAI(api_key=openai_key) if openai_key else None
 
-    all_llms = LLMS_OPENROUTER + (LLMS_OPENAI if openai_client else [])
+    all_llms = LLMS_CLAUDE + LLMS_OPENROUTER + (LLMS_OPENAI if openai_client else [])
 
     os.makedirs("data", exist_ok=True)
     prompts_df  = pd.read_csv("prompts.csv")
@@ -152,7 +166,9 @@ def run_benchmark():
             print(f"[{count}/{total}] {category} — {prompt[:60]}...")
 
             try:
-                if llm.get("source") == "openai":
+                if llm.get("source") == "anthropic":
+                    answer = query_claude_direct(prompt, llm["model"], claude_client)
+                elif llm.get("source") == "openai":
                     answer = query_openai_direct(prompt, llm["model"], openai_client)
                 else:
                     answer = query_llm(prompt, llm["model"], openrouter_client)

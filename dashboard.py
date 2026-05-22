@@ -34,11 +34,17 @@ LLM_COLORS = {
 # LLMs via OpenRouter (1 clé pour tout)
 # Pour voir tous les modèles : https://openrouter.ai/models
 LLMS_OPENROUTER = [
-    {"name": "GPT-4.1 (OpenRouter)",    "model": "openai/gpt-4.1"},
-    {"name": "Gemini 2.5 Flash",        "model": "google/gemini-2.5-flash"},
-    {"name": "Perplexity Sonar Pro",    "model": "perplexity/sonar-pro"},
-    {"name": "Mistral Large",           "model": "mistralai/mistral-large-2411"},
-    {"name": "Meta Llama 3.3 70B",      "model": "meta-llama/llama-3.3-70b-instruct"},
+    {"name": "GPT-4.1",             "model": "openai/gpt-4.1"},
+    {"name": "Gemini 2.5 Flash",    "model": "google/gemini-2.5-flash"},
+    {"name": "Perplexity Sonar Pro","model": "perplexity/sonar-pro"},
+    {"name": "Mistral Large",       "model": "mistralai/mistral-large-2411"},
+    {"name": "Meta Llama 3.3 70B",  "model": "meta-llama/llama-3.3-70b-instruct"},
+]
+
+# Claude via Anthropic directe (clé ANTHROPIC_API_KEY déjà requise pour l'analyse)
+LLMS_CLAUDE = [
+    {"name": "Claude Sonnet 4.6", "model": "claude-sonnet-4-6",  "source": "anthropic"},
+    {"name": "Claude Opus 4.7",   "model": "claude-opus-4-7",    "source": "anthropic"},
 ]
 
 # LLMs via clé OpenAI directe (derniers modèles GPT-5)
@@ -88,6 +94,14 @@ def query_openai_direct(prompt, model_id, openai_client):
         messages=[{"role": "user", "content": prompt}]
     )
     return r.choices[0].message.content
+
+def query_claude_direct(prompt, model_id, claude_client):
+    # Interroge Claude via l'API Anthropic (même clé que pour l'analyse)
+    r = claude_client.messages.create(
+        model=model_id, max_tokens=800,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return r.content[0].text
 
 
 def analyze_response(prompt, response, competitors, claude_client):
@@ -140,7 +154,9 @@ def run_benchmark_streamlit(claude_client, openrouter_client, openai_client, pro
             status.markdown(f"*{prompt[:90]}...*")
 
             try:
-                if llm.get("source") == "openai":
+                if llm.get("source") == "anthropic":
+                    answer = query_claude_direct(prompt, llm["model"], claude_client)
+                elif llm.get("source") == "openai":
                     answer = query_openai_direct(prompt, llm["model"], openai_client)
                 else:
                     answer = query_llm(prompt, llm["model"], openrouter_client)
@@ -187,6 +203,11 @@ with st.sidebar:
         st.stop()
 
     selected_llms = []
+
+    st.markdown("**Claude (Anthropic) :**")
+    for llm in LLMS_CLAUDE:
+        if st.checkbox(llm["name"], value=True, key=f"chk_{llm['name']}"):
+            selected_llms.append(llm)
 
     st.markdown("**Via OpenRouter :**")
     for llm in LLMS_OPENROUTER:
