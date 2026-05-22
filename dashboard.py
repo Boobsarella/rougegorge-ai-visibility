@@ -3,6 +3,7 @@ dashboard.py — Dashboard RougeGorge AI Visibility
 """
 
 import os
+import re
 import json
 import pandas as pd
 import streamlit as st
@@ -220,10 +221,29 @@ def run_llm(prompt, llm):
         return query_openai(prompt, llm["model"], openai_client)
 
 
+# ── Détection RougeGorge dans la réponse complète ────────────────────────────
+def find_rg_position(text):
+    """Retourne l'index de la première mention de RougeGorge (insensible à la casse)."""
+    for pattern in (r"rougegorge", r"rouge[\s\-]gorge"):
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            return m.start()
+    return -1
+
+def build_analysis_excerpt(response):
+    """Extrait intelligent : inclut le début + le passage RougeGorge s'il est loin."""
+    rg_pos = find_rg_position(response)
+    if 0 <= rg_pos <= 3500:
+        return response[:4500]                        # RG dans la zone normale
+    if rg_pos > 3500:
+        passage = response[max(0, rg_pos - 400): rg_pos + 700]
+        return response[:2500] + "\n[...]\n" + passage  # début + passage RG
+    return response[:4500]                            # RG absente : on envoie plus
+
+
 # ── Analyse avec Claude Haiku ──────────────────────────────────────────────────
 def analyze_response(prompt, response, competitors, client):
-    # Tronquer pour éviter des réponses trop longues qui font échouer le parsing
-    response_trunc = response[:2500] + ("…[tronqué]" if len(response) > 2500 else "")
+    response_trunc = build_analysis_excerpt(response)
     system = f"""Tu es un expert en visibilité de marque dans les réponses IA.
 Tu analyses des réponses pour mesurer la présence de RougeGorge.
 Tu réponds UNIQUEMENT en JSON valide. Concurrents surveillés : {', '.join(competitors)}"""
@@ -620,9 +640,15 @@ with tab_questions:
                             unsafe_allow_html=True)
                     if r["response"]:
                         with st.expander("Voir la réponse complète"):
-                            st.markdown(
-                                r["response"][:800]
-                                + ("..." if len(r["response"]) > 800 else ""))
+                            display_text = r["response"][:2500]
+                            if len(r["response"]) > 2500:
+                                display_text += "\n\n*[réponse tronquée à 2500 caractères]*"
+                            highlighted = re.sub(
+                                r"(rougegorge|rouge[\s\-]gorge)",
+                                r'<mark style="background:#fee2e2;border-radius:3px;'
+                                r'padding:1px 4px;font-weight:600">\1</mark>',
+                                display_text, flags=re.IGNORECASE)
+                            st.markdown(highlighted, unsafe_allow_html=True)
                 st.divider()
 
     # ── Articles de blog suggérés ──────────────────────────────────────────────
