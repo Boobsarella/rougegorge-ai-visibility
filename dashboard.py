@@ -41,10 +41,11 @@ LLMS_OPENROUTER = [
     {"name": "Meta Llama 3.3 70B",      "model": "meta-llama/llama-3.3-70b-instruct"},
 ]
 
-# LLMs via clé OpenAI directe (o3 et o4-mini non disponibles sur OpenRouter)
+# LLMs via clé OpenAI directe (derniers modèles GPT-5)
 LLMS_OPENAI = [
-    {"name": "o3",      "model": "o3"},
-    {"name": "o4-mini", "model": "o4-mini"},
+    {"name": "GPT-5.5",      "model": "gpt-5.5"},
+    {"name": "GPT-5.4",      "model": "gpt-5.4"},
+    {"name": "GPT-5.4-mini", "model": "gpt-5.4-mini"},
 ]
 
 st.markdown("""
@@ -80,8 +81,8 @@ def query_llm(prompt, model_id, openrouter_client):
     )
     return r.choices[0].message.content
 
-def query_openai_reasoning(prompt, model_id, openai_client):
-    # o3 et o4-mini utilisent max_completion_tokens (pas max_tokens)
+def query_openai_direct(prompt, model_id, openai_client):
+    # GPT-5.x utilisent max_completion_tokens (pas max_tokens)
     r = openai_client.chat.completions.create(
         model=model_id, max_completion_tokens=800,
         messages=[{"role": "user", "content": prompt}]
@@ -140,7 +141,7 @@ def run_benchmark_streamlit(claude_client, openrouter_client, openai_client, pro
 
             try:
                 if llm.get("source") == "openai":
-                    answer = query_openai_reasoning(prompt, llm["model"], openai_client)
+                    answer = query_openai_direct(prompt, llm["model"], openai_client)
                 else:
                     answer = query_llm(prompt, llm["model"], openrouter_client)
             except Exception as e:
