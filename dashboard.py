@@ -21,21 +21,25 @@ CATEGORIES  = [
     "durabilite", "autre",
 ]
 LLM_COLORS = {
-    "Claude Sonnet 4.6":  "#DC3545",
-    "Claude Opus 4.7":    "#a61c2e",
-    "GPT-5.5":            "#10a37f",
-    "GPT-5.4":            "#1a7a5e",
-    "GPT-5.4-mini":       "#34d399",
-    "GPT-4o Web":         "#0ea5e9",
-    "GPT-5 Search":       "#0369a1",
-    "Perplexity Sonar Pro":"#7c3aed",
-    "Perplexity Sonar":   "#a78bfa",
+    "Claude Sonnet 4.6":      "#DC3545",
+    "Claude Opus 4.7":        "#a61c2e",
+    "Claude Sonnet 4.6 Web":  "#ff6b6b",
+    "GPT-5.5":                "#10a37f",
+    "GPT-5.4":                "#1a7a5e",
+    "GPT-5.4-mini":           "#34d399",
+    "GPT-4o Web":             "#0ea5e9",
+    "GPT-5 Search":           "#0369a1",
+    "Perplexity Sonar Pro":   "#7c3aed",
+    "Perplexity Sonar":       "#a78bfa",
 }
 
 # ── Modèles ────────────────────────────────────────────────────────────────────
 LLMS_CLAUDE = [
     {"name": "Claude Sonnet 4.6", "model": "claude-sonnet-4-6", "source": "anthropic"},
     {"name": "Claude Opus 4.7",   "model": "claude-opus-4-7",   "source": "anthropic"},
+]
+LLMS_CLAUDE_WEB = [
+    {"name": "Claude Sonnet 4.6 Web", "model": "claude-sonnet-4-6", "source": "anthropic_web"},
 ]
 LLMS_OPENAI = [
     {"name": "GPT-5.5",      "model": "gpt-5.5",      "source": "openai"},
@@ -178,10 +182,38 @@ def query_perplexity(prompt, model_id, client):
         messages=[{"role": "user", "content": prompt}])
     return r.choices[0].message.content
 
+def query_claude_web(prompt, model_id, client):
+    """Claude avec recherche web (tool built-in Anthropic web_search_20250305)."""
+    messages = [{"role": "user", "content": prompt}]
+    for _ in range(10):
+        r = client.messages.create(
+            model=model_id,
+            max_tokens=1500,
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            messages=messages,
+        )
+        texts = [b.text for b in r.content
+                 if getattr(b, "type", "") == "text" and hasattr(b, "text")]
+        if r.stop_reason == "end_turn":
+            return "\n".join(texts)
+        if r.stop_reason == "tool_use":
+            messages.append({"role": "assistant", "content": r.content})
+            tool_results = [
+                {"type": "tool_result", "tool_use_id": b.id, "content": []}
+                for b in r.content if getattr(b, "type", "") == "tool_use"
+            ]
+            if tool_results:
+                messages.append({"role": "user", "content": tool_results})
+        else:
+            return "\n".join(texts)
+    return "\n".join(texts) if texts else ""
+
 def run_llm(prompt, llm):
     """Route vers le bon client selon la source du LLM."""
     if llm["source"] == "anthropic":
         return query_claude(prompt, llm["model"], claude_client)
+    elif llm["source"] == "anthropic_web":
+        return query_claude_web(prompt, llm["model"], claude_client)
     elif llm["source"] == "perplexity":
         return query_perplexity(prompt, llm["model"], perplexity_client)
     else:
@@ -375,8 +407,12 @@ with st.sidebar:
 
     selected_llms: list = []
 
-    st.markdown("**Claude (Anthropic) :**")
+    st.markdown("**Claude — base :**")
     for llm in LLMS_CLAUDE:
+        if st.checkbox(llm["name"], value=True, key=f"chk_{llm['name']}"):
+            selected_llms.append(llm)
+    st.markdown("**Claude — recherche web 🔍 :**")
+    for llm in LLMS_CLAUDE_WEB:
         if st.checkbox(llm["name"], value=True, key=f"chk_{llm['name']}"):
             selected_llms.append(llm)
 
