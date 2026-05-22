@@ -542,39 +542,39 @@ with tab_questions:
     st.divider()
 
     # ── 2. Question personnalisée ──────────────────────────────────────────────
-    st.markdown("### ✏️ Tester / ajouter une question")
-    st.caption("Écris n'importe quelle question pour la tester immédiatement ou l'ajouter au pool")
+    st.markdown("### ✏️ Tester une question")
+    st.caption("La question est envoyée telle quelle aux IA — aucun filtre n'est appliqué")
 
-    cq1, cq2 = st.columns([3, 1])
-    with cq1:
-        custom_q = st.text_input(
-            "Ta question", key="custom_q",
-            placeholder="Ex : je cherche un soutien-gorge confortable pour le quotidien",
-            label_visibility="collapsed")
-    with cq2:
-        custom_cat = st.selectbox("Catégorie", CATEGORIES,
-                                  key="custom_cat", label_visibility="collapsed")
+    custom_q = st.text_input(
+        "Ta question", key="custom_q",
+        placeholder="Ex : lingerie grande taille bonnet G",
+        label_visibility="collapsed")
 
     cb1, cb2, cb3 = st.columns([1, 1, 3])
     with cb1:
-        add_btn = st.button("＋ Ajouter au pool", use_container_width=True,
-                            disabled=not (custom_q or "").strip())
-    with cb2:
         test_btn = st.button("▶ Tester maintenant", use_container_width=True,
                              type="primary",
                              disabled=not (custom_q or "").strip() or not selected_llms)
+    with cb2:
+        add_btn = st.button("＋ Ajouter au pool", use_container_width=True,
+                            disabled=not (custom_q or "").strip())
 
     if add_btn and custom_q.strip():
+        # Demander la catégorie seulement au moment d'ajouter
         pool_prompts = set(st.session_state["prompts_pool"]["prompt"].tolist())
         if custom_q.strip() in pool_prompts:
             st.warning("Cette question est déjà dans le pool.")
         else:
-            new_row = pd.DataFrame([{
-                "prompt": custom_q.strip(), "category": custom_cat, "selected": True}])
-            st.session_state["prompts_pool"] = pd.concat(
-                [st.session_state["prompts_pool"], new_row], ignore_index=True)
-            st.success(f"Question ajoutée dans «{custom_cat}»")
-            st.rerun()
+            add_cat = st.selectbox(
+                "Catégorie (pour organiser dans le pool)",
+                CATEGORIES, key="add_cat_select")
+            if st.button("Confirmer l'ajout", key="confirm_add", type="primary"):
+                new_row = pd.DataFrame([{
+                    "prompt": custom_q.strip(), "category": add_cat, "selected": True}])
+                st.session_state["prompts_pool"] = pd.concat(
+                    [st.session_state["prompts_pool"], new_row], ignore_index=True)
+                st.success(f"Question ajoutée dans «{add_cat}»")
+                st.rerun()
 
     if test_btn and custom_q.strip() and selected_llms:
         with st.spinner(f"Test sur {len(selected_llms)} LLMs..."):
