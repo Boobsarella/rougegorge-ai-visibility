@@ -221,34 +221,30 @@ def run_llm(prompt, llm):
         return query_openai(prompt, llm["model"], openai_client)
 
 
-# ── Détection RougeGorge dans la réponse complète ────────────────────────────
-def find_rg_position(text):
-    """Retourne l'index de la première mention de RougeGorge (insensible à la casse)."""
-    for pattern in (r"rougegorge", r"rouge[\s\-]gorge"):
-        m = re.search(pattern, text, re.IGNORECASE)
-        if m:
-            return m.start()
-    return -1
-
-def build_analysis_excerpt(response):
-    """Extrait intelligent : inclut le début + le passage RougeGorge s'il est loin."""
-    rg_pos = find_rg_position(response)
-    if 0 <= rg_pos <= 3500:
-        return response[:4500]                        # RG dans la zone normale
-    if rg_pos > 3500:
-        passage = response[max(0, rg_pos - 400): rg_pos + 700]
-        return response[:2500] + "\n[...]\n" + passage  # début + passage RG
-    return response[:4500]                            # RG absente : on envoie plus
+# ── Détection Python de RougeGorge (gratuit, avant tout appel API) ────────────
+def rg_in_text(text):
+    return bool(re.search(r"rouge[\s\-]?gorge", text, re.IGNORECASE))
 
 
-# ── Analyse avec Claude Haiku ──────────────────────────────────────────────────
+# ── Analyse avec Claude Sonnet ────────────────────────────────────────────────
 def analyze_response(prompt, response, competitors, client):
-    response_trunc = build_analysis_excerpt(response)
+    # Pré-check Python : RG trouvée ?
+    rg_found_python = rg_in_text(response)
+
+    # Envoie la réponse complète si RG détectée, sinon cap à 8000 chars
+    full_text = response if rg_found_python else response[:8000]
+
     system = f"""Tu es un expert en visibilité de marque dans les réponses IA.
 Tu analyses des réponses pour mesurer la présence de RougeGorge.
 Tu réponds UNIQUEMENT en JSON valide. Concurrents surveillés : {', '.join(competitors)}"""
+
+    hint = ("⚠️ NOTE : le texte Python contient 'RougeGorge' — cherche-la attentivement."
+            if rg_found_python else "")
+
     request = f"""Question : {prompt}
-Réponse : {response_trunc}
+{hint}
+Réponse COMPLÈTE à analyser :
+{full_text}
 
 JSON :
 {{
@@ -258,9 +254,11 @@ JSON :
   "tonalite": "positive"/"neutre"/"negative",
   "score_visibilite": 0-100,
   "recommandation": "action GEO concrète"
-}}"""
+}}
+Score : 0=absente, 25=brièvement citée, 50=clairement citée, 75=bonne option, 100=premier choix"""
+
     r = client.messages.create(
-        model="claude-haiku-4-5-20251001", max_tokens=500,
+        model="claude-sonnet-4-6", max_tokens=600,
         system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": request}])
     raw = r.content[0].text.strip()
@@ -269,11 +267,21 @@ JSON :
         if raw.startswith("json"): raw = raw[4:]
         raw = raw.strip()
     try:
-        return json.loads(raw)
+        result = json.loads(raw)
+        # Filet de sécurité : si Python trouve RG mais Sonnet dit absente → forcer
+        if rg_found_python and not result.get("rougegorge_mentionnee"):
+            result["rougegorge_mentionnee"] = True
+            if result.get("position_citation") == "absente":
+                result["position_citation"] = "parmi d'autres"
+            if result.get("score_visibilite", 0) == 0:
+                result["score_visibilite"] = 25
+        return result
     except Exception:
-        return {"rougegorge_mentionnee": False, "position_citation": "absente",
+        return {"rougegorge_mentionnee": rg_found_python,
+                "position_citation": "parmi d'autres" if rg_found_python else "absente",
                 "concurrents_mentionnes": [], "tonalite": "neutre",
-                "score_visibilite": 0, "recommandation": "Erreur d'analyse"}
+                "score_visibilite": 25 if rg_found_python else 0,
+                "recommandation": "Erreur de parsing JSON"}
 
 
 # ── Génération de questions tendance ──────────────────────────────────────────
