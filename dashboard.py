@@ -1,12 +1,5 @@
 """
 dashboard.py — Dashboard RougeGorge AI Visibility
-
-Clés nécessaires :
-  - ANTHROPIC_API_KEY → Claude Sonnet 4.6, Claude Opus 4.7 + analyse des réponses
-  - OPENAI_API_KEY    → GPT-5.5, GPT-5.4, GPT-5.4-mini
-
-Usage local : streamlit run dashboard.py
-Usage cloud : déployer sur share.streamlit.io
 """
 
 import os
@@ -22,7 +15,11 @@ from datetime import datetime
 st.set_page_config(page_title="RougeGorge · AI Visibility", page_icon="🌹", layout="wide")
 
 BRAND_COLOR = "#DC3545"
-
+CATEGORIES  = [
+    "decouverte", "cadeau", "confort", "taille_plus", "sport", "nuit",
+    "comparaison", "prix", "occasion", "boutique", "mariage", "tendance",
+    "durabilite", "autre",
+]
 LLM_COLORS = {
     "Claude Sonnet 4.6": "#DC3545",
     "Claude Opus 4.7":   "#a61c2e",
@@ -30,8 +27,6 @@ LLM_COLORS = {
     "GPT-5.4":           "#1a7a5e",
     "GPT-5.4-mini":      "#34d399",
 }
-
-# ── Modèles disponibles ────────────────────────────────────────────────────────
 LLMS_CLAUDE = [
     {"name": "Claude Sonnet 4.6", "model": "claude-sonnet-4-6", "source": "anthropic"},
     {"name": "Claude Opus 4.7",   "model": "claude-opus-4-7",   "source": "anthropic"},
@@ -42,22 +37,59 @@ LLMS_OPENAI = [
     {"name": "GPT-5.4-mini", "model": "gpt-5.4-mini", "source": "openai"},
 ]
 
+
+# ── CSS + Poppins ──────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    [data-testid="stMetricValue"] { font-size:1.9rem !important; font-weight:700; }
-    [data-testid="stMetricLabel"] { font-size:0.78rem !important; color:#888;
-                                    text-transform:uppercase; letter-spacing:0.05em; }
-    .rec-card { background:#fff7f7; border-left:4px solid #DC3545; border-radius:6px;
-                padding:10px 16px; margin:6px 0; font-size:0.92em; line-height:1.5; }
-    .suggest-card { background:#f8faff; border:1px solid #dbe8ff; border-radius:10px;
-                    padding:14px 16px; margin:6px 0; }
-    .suggest-title { font-weight:600; font-size:0.95em; margin-bottom:4px; }
-    .suggest-desc  { color:#555; font-size:0.85em; line-height:1.4; }
+@import url('https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap');
+
+html, body, [class*="css"], .stApp, .stMarkdown, .stButton>button,
+p, span, div, h1, h2, h3, h4, h5, h6, label, input, select, textarea,
+.stDataFrame, [data-testid], .stSelectbox, .stTextInput, .stCheckbox,
+.stTabs [data-baseweb="tab"] {
+    font-family: 'Poppins', sans-serif !important;
+}
+[data-testid="stMetricValue"] {
+    font-size: 1.85rem !important; font-weight: 700;
+}
+[data-testid="stMetricLabel"] {
+    font-size: 0.72rem !important; color: #888;
+    text-transform: uppercase; letter-spacing: 0.07em;
+}
+.stTabs [data-baseweb="tab"] {
+    font-weight: 500; font-size: 0.92em; padding: 8px 20px;
+}
+.rec-card {
+    background: #fff7f7; border-left: 4px solid #DC3545;
+    border-radius: 8px; padding: 10px 16px; margin: 6px 0;
+    font-size: 0.9em; line-height: 1.6;
+}
+.suggest-card {
+    background: #f8faff; border: 1px solid #dbe8ff;
+    border-radius: 10px; padding: 14px 16px; margin: 6px 0;
+}
+.suggest-title { font-weight: 600; font-size: 0.95em; margin-bottom: 4px; }
+.suggest-desc  { color: #555; font-size: 0.85em; line-height: 1.4; }
+.trend-card {
+    background: #fafafa; border: 1px solid #e5e7eb;
+    border-radius: 10px; padding: 12px 14px; margin-bottom: 4px;
+}
+.trend-cat {
+    display: inline-block; background: #fee2e2; color: #991b1b;
+    font-size: 0.68em; font-weight: 600; padding: 2px 9px;
+    border-radius: 20px; text-transform: uppercase;
+    letter-spacing: 0.05em; margin-bottom: 5px;
+}
+.q-count { font-size: 0.88em; color: #6b7280; margin: 4px 0 12px 0; }
+.result-card {
+    background: #f8faff; border: 1px solid #e5e7eb;
+    border-radius: 10px; padding: 14px 18px; margin: 6px 0;
+}
 </style>
 """, unsafe_allow_html=True)
 
 
-# ── Clés API ───────────────────────────────────────────────────────────────────
+# ── Clés & clients ─────────────────────────────────────────────────────────────
 def get_secret(key):
     if hasattr(st, "secrets") and key in st.secrets:
         return st.secrets[key]
@@ -67,28 +99,49 @@ def get_secret(key):
     return val if val and "REMPLACE" not in val else None
 
 
+anthropic_key = get_secret("ANTHROPIC_API_KEY")
+openai_key    = get_secret("OPENAI_API_KEY")
+claude_client = anthropic.Anthropic(api_key=anthropic_key) if anthropic_key else None
+openai_client = OpenAI(api_key=openai_key)                 if openai_key    else None
+
+
+# ── Concurrents ────────────────────────────────────────────────────────────────
+competitors_list = (
+    pd.read_csv("competitors.csv")["competitor"].tolist()
+    if os.path.exists("competitors.csv") else []
+)
+
+
+# ── Session state : pool de questions ─────────────────────────────────────────
+if "prompts_pool" not in st.session_state:
+    if os.path.exists("prompts.csv"):
+        _df = pd.read_csv("prompts.csv")
+        _df["selected"] = True
+        st.session_state["prompts_pool"] = _df[["prompt", "category", "selected"]].copy()
+    else:
+        st.session_state["prompts_pool"] = pd.DataFrame(
+            columns=["prompt", "category", "selected"])
+
+
 # ── Fonctions de requête ───────────────────────────────────────────────────────
-def query_claude(prompt, model_id, claude_client):
-    r = claude_client.messages.create(
+def query_claude(prompt, model_id, client):
+    r = client.messages.create(
         model=model_id, max_tokens=800,
-        messages=[{"role": "user", "content": prompt}]
-    )
+        messages=[{"role": "user", "content": prompt}])
     return r.content[0].text
 
-def query_openai(prompt, model_id, openai_client):
-    r = openai_client.chat.completions.create(
+def query_openai(prompt, model_id, client):
+    r = client.chat.completions.create(
         model=model_id, max_completion_tokens=800,
-        messages=[{"role": "user", "content": prompt}]
-    )
+        messages=[{"role": "user", "content": prompt}])
     return r.choices[0].message.content
 
 
 # ── Analyse avec Claude Haiku ──────────────────────────────────────────────────
-def analyze_response(prompt, response, competitors, claude_client):
-    competitors_str = ", ".join(competitors)
+def analyze_response(prompt, response, competitors, client):
     system = f"""Tu es un expert en visibilité de marque dans les réponses IA.
 Tu analyses des réponses pour mesurer la présence de RougeGorge.
-Tu réponds UNIQUEMENT en JSON valide. Concurrents surveillés : {competitors_str}"""
+Tu réponds UNIQUEMENT en JSON valide. Concurrents surveillés : {', '.join(competitors)}"""
     request = f"""Question : {prompt}
 Réponse : {response}
 
@@ -101,11 +154,10 @@ JSON :
   "score_visibilite": 0-100,
   "recommandation": "action GEO concrète"
 }}"""
-    r = claude_client.messages.create(
+    r = client.messages.create(
         model="claude-haiku-4-5-20251001", max_tokens=500,
         system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": request}]
-    )
+        messages=[{"role": "user", "content": request}])
     raw = r.content[0].text.strip()
     if "```" in raw:
         raw = raw.split("```")[1]
@@ -119,34 +171,53 @@ JSON :
                 "score_visibilite": 0, "recommandation": "Erreur d'analyse"}
 
 
-# ── Benchmark Streamlit ────────────────────────────────────────────────────────
-def run_benchmark_streamlit(claude_client, openai_client, prompts_df, competitors, selected_llms):
-    total   = len(prompts_df) * len(selected_llms)
-    results = []
-    bar     = st.progress(0)
-    status  = st.empty()
-    count   = 0
+# ── Génération de questions tendance ──────────────────────────────────────────
+def generate_trending_questions(client, n=12):
+    r = client.messages.create(
+        model="claude-haiku-4-5-20251001", max_tokens=1200,
+        messages=[{"role": "user", "content": f"""Tu es expert en comportement consommateur lingerie, Europe 2026.
+Génère {n} questions authentiques que des gens posent aux IA pour trouver de la lingerie.
+Sois varié : cadeaux, occasions, tailles, confort, sport, prix, tendances, durabilité...
+Formule comme un vrai utilisateur — naturel, varié, pas toutes sur le même modèle.
+
+Réponds UNIQUEMENT en JSON :
+{{"questions": [{{"prompt": "...", "category": "..."}}]}}
+
+Catégories possibles : decouverte | cadeau | confort | taille_plus | sport | nuit | comparaison | prix | occasion | boutique | mariage | tendance | durabilite"""}])
+    raw = r.content[0].text.strip()
+    if "```" in raw:
+        raw = raw.split("```")[1]
+        if raw.startswith("json"): raw = raw[4:]
+        raw = raw.strip()
+    return json.loads(raw)["questions"]
+
+
+# ── Benchmark complet ──────────────────────────────────────────────────────────
+def run_benchmark_streamlit(selected_prompts_df, selected_llms):
+    total, results, count = len(selected_prompts_df) * len(selected_llms), [], 0
+    bar    = st.progress(0)
+    status = st.empty()
 
     for llm in selected_llms:
-        for _, row in prompts_df.iterrows():
+        for _, row in selected_prompts_df.iterrows():
             prompt, cat = row["prompt"], row.get("category", "général")
             count += 1
             bar.progress(count / total, text=f"{llm['name']} — {cat} ({count}/{total})")
-            status.markdown(f"*{prompt[:90]}...*")
+            status.markdown(f"*{str(prompt)[:90]}...*")
 
             try:
-                if llm["source"] == "anthropic":
-                    answer = query_claude(prompt, llm["model"], claude_client)
-                else:
-                    answer = query_openai(prompt, llm["model"], openai_client)
+                answer = (query_claude(prompt, llm["model"], claude_client)
+                          if llm["source"] == "anthropic"
+                          else query_openai(prompt, llm["model"], openai_client))
             except Exception as e:
                 answer = ""
                 st.warning(f"{llm['name']} : {e}")
 
-            analysis = analyze_response(prompt, answer, competitors, claude_client) if answer else \
-                {"rougegorge_mentionnee": False, "position_citation": "absente",
-                 "concurrents_mentionnes": [], "tonalite": "neutre",
-                 "score_visibilite": 0, "recommandation": "Erreur de requête"}
+            analysis = (analyze_response(prompt, answer, competitors_list, claude_client)
+                        if answer else
+                        {"rougegorge_mentionnee": False, "position_citation": "absente",
+                         "concurrents_mentionnes": [], "tonalite": "neutre",
+                         "score_visibilite": 0, "recommandation": "Erreur de requête"})
 
             results.append({
                 "date":                   datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -159,7 +230,7 @@ def run_benchmark_streamlit(claude_client, openai_client, prompts_df, competitor
                 "concurrents_mentionnes": ", ".join(analysis.get("concurrents_mentionnes", [])),
                 "tonalite":               analysis.get("tonalite", "neutre"),
                 "score_visibilite":       analysis.get("score_visibilite", 0),
-                "recommandation":         analysis.get("recommandation", "")
+                "recommandation":         analysis.get("recommandation", ""),
             })
 
     bar.progress(1.0, text="✅ Terminé !")
@@ -167,18 +238,47 @@ def run_benchmark_streamlit(claude_client, openai_client, prompts_df, competitor
     return pd.DataFrame(results)
 
 
-# ── SIDEBAR ────────────────────────────────────────────────────────────────────
+# ── Test d'une seule question ──────────────────────────────────────────────────
+def run_single_question(prompt, selected_llms):
+    results, prog = [], st.progress(0)
+    for i, llm in enumerate(selected_llms):
+        prog.progress((i + 1) / len(selected_llms), text=f"Test sur {llm['name']}...")
+        try:
+            answer = (query_claude(prompt, llm["model"], claude_client)
+                      if llm["source"] == "anthropic"
+                      else query_openai(prompt, llm["model"], openai_client))
+        except Exception as e:
+            answer = ""
+            st.warning(f"{llm['name']} : {e}")
+        analysis = (analyze_response(prompt, answer, competitors_list, claude_client)
+                    if answer else
+                    {"rougegorge_mentionnee": False, "position_citation": "absente",
+                     "concurrents_mentionnes": [], "tonalite": "neutre",
+                     "score_visibilite": 0, "recommandation": "Erreur"})
+        results.append({
+            "llm":            llm["name"],
+            "score":          analysis.get("score_visibilite", 0),
+            "cited":          analysis.get("rougegorge_mentionnee", False),
+            "position":       analysis.get("position_citation", "absente"),
+            "tonalite":       analysis.get("tonalite", "neutre"),
+            "recommandation": analysis.get("recommandation", ""),
+            "response":       answer,
+        })
+    prog.empty()
+    return results
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SIDEBAR
+# ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("### ⚙️ Paramètres")
-
-    anthropic_key = get_secret("ANTHROPIC_API_KEY")
-    openai_key    = get_secret("OPENAI_API_KEY")
 
     if not anthropic_key:
         st.error("ANTHROPIC_API_KEY manquante dans .env")
         st.stop()
 
-    selected_llms = []
+    selected_llms: list = []
 
     st.markdown("**Claude (Anthropic) :**")
     for llm in LLMS_CLAUDE:
@@ -194,19 +294,23 @@ with st.sidebar:
         st.caption("_Ajoute OPENAI_API_KEY pour tester GPT-5_")
 
     st.divider()
-    n = len(pd.read_csv("prompts.csv")) if os.path.exists("prompts.csv") else 0
-    st.caption(f"{n} prompts × {len(selected_llms)} LLMs = **{n * len(selected_llms)} requêtes**")
 
-    if st.button("🚀 Lancer le benchmark", type="primary", use_container_width=True,
-                 disabled=not selected_llms):
+    pool     = st.session_state["prompts_pool"]
+    n_sel    = int(pool["selected"].sum()) if not pool.empty else 0
+    n_llms   = len(selected_llms)
+    n_req    = n_sel * n_llms
+
+    st.caption(
+        f"**{n_sel}** questions sélectionnées  \n"
+        f"**{n_llms}** LLMs  \n"
+        f"→ **{n_req} requêtes** au total"
+    )
+
+    if st.button("🚀 Lancer le benchmark", type="primary",
+                 use_container_width=True, disabled=not selected_llms or n_sel == 0):
         try:
-            claude_client = anthropic.Anthropic(api_key=anthropic_key)
-            openai_client = OpenAI(api_key=openai_key) if openai_key else None
-            prompts_df    = pd.read_csv("prompts.csv")
-            competitors   = pd.read_csv("competitors.csv")["competitor"].tolist()
-            df_new = run_benchmark_streamlit(
-                claude_client, openai_client, prompts_df, competitors, selected_llms
-            )
+            sel_df = pool[pool["selected"]].copy()
+            df_new = run_benchmark_streamlit(sel_df, selected_llms)
             os.makedirs("data", exist_ok=True)
             df_new.to_csv("data/analyzed_results.csv", index=False, encoding="utf-8")
             st.session_state["df"] = df_new
@@ -219,227 +323,453 @@ with st.sidebar:
     st.caption("🌹 RougeGorge AI Visibility · 2026")
 
 
-# ── Chargement données ─────────────────────────────────────────────────────────
-DATA_FILE = "data/analyzed_results.csv"
-if "df" in st.session_state:
-    df = st.session_state["df"]
-elif os.path.exists(DATA_FILE):
-    df = pd.read_csv(DATA_FILE)
-else:
-    st.markdown("## 🌹 RougeGorge — AI Visibility Monitor")
-    st.info("Clique sur **Lancer le benchmark** dans le menu à gauche.")
-    st.stop()
-
-if df.empty:
-    st.stop()
-
-available_llms = sorted(df["llm"].unique().tolist()) if "llm" in df.columns else []
-
-# ── TITRE ──────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# TITRE + ONGLETS
+# ══════════════════════════════════════════════════════════════════════════════
 st.markdown("## 🌹 RougeGorge — AI Visibility Monitor")
-last_date = df["date"].max() if "date" in df.columns else ""
-st.caption(f"Dernière analyse : {last_date} · {len(df)} réponses · {' · '.join(available_llms)}")
-st.divider()
+
+tab_dash, tab_questions = st.tabs(["📊 Résultats & Analyses", "❓ Questions"])
 
 
-# ── KPIs ───────────────────────────────────────────────────────────────────────
-score_moyen = df["score_visibilite"].mean()
-mentions    = int(df["rougegorge_mentionnee"].sum())
-pct         = (mentions / len(df)) * 100
-positives   = int((df["tonalite"] == "positive").sum())
+# ══════════════════════════════════════════════════════════════════════════════
+# ONGLET QUESTIONS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_questions:
 
-all_comp = []
-for e in df["concurrents_mentionnes"].dropna():
-    for c in str(e).split(","):
-        c = c.strip()
-        if c: all_comp.append(c)
+    # ── 1. Questions tendance ──────────────────────────────────────────────────
+    st.markdown("### 🔥 Questions tendance")
+    st.caption("Génère les questions les plus posées aux IA sur la lingerie en 2026")
 
-total_mentions = mentions + len(all_comp)
-sov      = round((mentions / total_mentions * 100) if total_mentions > 0 else 0, 1)
-top_comp = pd.Series(all_comp).value_counts().index[0] if all_comp else "—"
+    cg1, cg2, cg3 = st.columns([1, 1, 3])
+    with cg1:
+        n_gen = st.selectbox("Nombre", [8, 12, 16, 20], index=1, key="n_gen")
+    with cg2:
+        st.write("")
+        st.write("")
+        gen_btn = st.button("✨ Générer", use_container_width=True, key="btn_generate")
 
-c1, c2, c3, c4, c5 = st.columns(5)
-with c1: st.metric("Score global", f"{score_moyen:.1f} / 100")
-with c2: st.metric("Taux de citation", f"{pct:.0f}%", f"{mentions} / {len(df)}")
-with c3: st.metric("Share of voice", f"{sov}%", "vs concurrents")
-with c4: st.metric("Tonalité positive", f"{positives} réponses")
-with c5: st.metric("Concurrent n°1", top_comp)
+    if gen_btn:
+        with st.spinner("Génération en cours..."):
+            try:
+                st.session_state["trending"] = generate_trending_questions(
+                    claude_client, n_gen)
+            except Exception as e:
+                st.error(f"Erreur : {e}")
 
-st.divider()
+    if st.session_state.get("trending"):
+        trending = st.session_state["trending"]
+        pool_prompts = set(st.session_state["prompts_pool"]["prompt"].tolist())
+        cols_t = st.columns(2)
+        for i, q in enumerate(trending):
+            with cols_t[i % 2]:
+                already = q["prompt"] in pool_prompts
+                st.markdown(
+                    f'<div class="trend-card">'
+                    f'<span class="trend-cat">{q.get("category","autre")}</span><br>'
+                    f'<span style="font-size:0.88em;line-height:1.5">{q["prompt"]}</span>'
+                    f'</div>', unsafe_allow_html=True)
+                if already:
+                    st.caption("✓ Déjà dans le pool")
+                else:
+                    if st.button("＋ Ajouter au pool", key=f"add_t_{i}",
+                                 use_container_width=True):
+                        new_row = pd.DataFrame([{
+                            "prompt": q["prompt"],
+                            "category": q.get("category", "autre"),
+                            "selected": True,
+                        }])
+                        st.session_state["prompts_pool"] = pd.concat(
+                            [st.session_state["prompts_pool"], new_row],
+                            ignore_index=True)
+                        st.rerun()
 
-
-# ── COMPARAISON ENTRE LLMs ────────────────────────────────────────────────────
-if len(available_llms) > 1:
-    st.markdown("### 🤖 Comparaison entre les IA")
-    llm_stats = (df.groupby("llm")
-                   .agg(score_moyen=("score_visibilite", "mean"),
-                        taux_citation=("rougegorge_mentionnee", lambda x: round(x.mean() * 100, 1)))
-                   .reset_index().sort_values("score_moyen", ascending=False))
-    color_map = {row["llm"]: LLM_COLORS.get(row["llm"], "#888") for _, row in llm_stats.iterrows()}
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.markdown("**Score moyen de visibilité**")
-        fig = px.bar(llm_stats, x="llm", y="score_moyen", text="score_moyen",
-                     color="llm", color_discrete_map=color_map)
-        fig.update_traces(texttemplate="%{text:.1f}", textposition="outside")
-        fig.update_layout(height=280, showlegend=False, yaxis_range=[0, 110],
-                          xaxis_title=None, yaxis_title="Score / 100",
-                          margin=dict(t=20, b=10), paper_bgcolor="rgba(0,0,0,0)")
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col_b:
-        st.markdown("**Taux de citation de RougeGorge**")
-        fig2 = px.bar(llm_stats, x="llm", y="taux_citation", text="taux_citation",
-                      color="llm", color_discrete_map=color_map)
-        fig2.update_traces(texttemplate="%{text:.0f}%", textposition="outside")
-        fig2.update_layout(height=280, showlegend=False, yaxis_range=[0, 110],
-                           xaxis_title=None, yaxis_title="% prompts",
-                           margin=dict(t=20, b=10), paper_bgcolor="rgba(0,0,0,0)")
-        st.plotly_chart(fig2, use_container_width=True)
-
-    st.markdown("**Heatmap — score par IA et par catégorie**")
-    heat  = df.groupby(["category", "llm"])["score_visibilite"].mean().reset_index()
-    pivot = heat.pivot(index="category", columns="llm", values="score_visibilite").fillna(0)
-    fig_h = px.imshow(pivot, color_continuous_scale=["#fee2e2", "#fef3c7", "#dcfce7"],
-                      zmin=0, zmax=100, text_auto=".0f", aspect="auto")
-    fig_h.update_layout(height=max(250, len(pivot) * 35), margin=dict(t=20, b=20),
-                        paper_bgcolor="rgba(0,0,0,0)", coloraxis_showscale=False)
-    st.plotly_chart(fig_h, use_container_width=True)
     st.divider()
 
+    # ── 2. Question personnalisée ──────────────────────────────────────────────
+    st.markdown("### ✏️ Tester / ajouter une question")
+    st.caption("Écris n'importe quelle question pour la tester immédiatement ou l'ajouter au pool")
 
-# ── JAUGE + TONALITÉ ───────────────────────────────────────────────────────────
-col_g, col_t = st.columns([1, 1])
-with col_g:
-    st.markdown("**Score global**")
-    color = "#22c55e" if score_moyen >= 60 else "#f59e0b" if score_moyen >= 30 else "#ef4444"
-    fig_gauge = go.Figure(go.Indicator(
-        mode="gauge+number", value=round(score_moyen, 1),
-        number={"suffix": " / 100", "font": {"size": 28, "color": color}},
-        gauge={"axis": {"range": [0, 100]}, "bar": {"color": color, "thickness": 0.3},
-               "steps": [{"range": [0, 30], "color": "#fee2e2"},
-                         {"range": [30, 60], "color": "#fef3c7"},
-                         {"range": [60, 100], "color": "#dcfce7"}]}
-    ))
-    fig_gauge.update_layout(height=200, margin=dict(t=30, b=10, l=20, r=20),
-                             paper_bgcolor="rgba(0,0,0,0)")
-    st.plotly_chart(fig_gauge, use_container_width=True)
+    cq1, cq2 = st.columns([3, 1])
+    with cq1:
+        custom_q = st.text_input(
+            "Ta question", key="custom_q",
+            placeholder="Ex : je cherche un soutien-gorge confortable pour le quotidien",
+            label_visibility="collapsed")
+    with cq2:
+        custom_cat = st.selectbox("Catégorie", CATEGORIES,
+                                  key="custom_cat", label_visibility="collapsed")
 
-with col_t:
-    st.markdown("**Tonalité des réponses**")
-    ton = df["tonalite"].value_counts().reset_index()
-    ton.columns = ["Tonalité", "Nb"]
-    fig_ton = px.pie(ton, values="Nb", names="Tonalité", hole=0.55, color="Tonalité",
-                     color_discrete_map={"positive": "#22c55e", "neutre": "#94a3b8", "negative": "#ef4444"})
-    fig_ton.update_layout(height=200, margin=dict(t=10, b=10, l=10, r=10),
-                           legend=dict(orientation="h", y=-0.15), paper_bgcolor="rgba(0,0,0,0)")
-    st.plotly_chart(fig_ton, use_container_width=True)
+    cb1, cb2, cb3 = st.columns([1, 1, 3])
+    with cb1:
+        add_btn = st.button("＋ Ajouter au pool", use_container_width=True,
+                            disabled=not (custom_q or "").strip())
+    with cb2:
+        test_btn = st.button("▶ Tester maintenant", use_container_width=True,
+                             type="primary",
+                             disabled=not (custom_q or "").strip() or not selected_llms)
 
-st.divider()
+    if add_btn and custom_q.strip():
+        pool_prompts = set(st.session_state["prompts_pool"]["prompt"].tolist())
+        if custom_q.strip() in pool_prompts:
+            st.warning("Cette question est déjà dans le pool.")
+        else:
+            new_row = pd.DataFrame([{
+                "prompt": custom_q.strip(), "category": custom_cat, "selected": True}])
+            st.session_state["prompts_pool"] = pd.concat(
+                [st.session_state["prompts_pool"], new_row], ignore_index=True)
+            st.success(f"Question ajoutée dans «{custom_cat}»")
+            st.rerun()
 
+    if test_btn and custom_q.strip() and selected_llms:
+        with st.spinner(f"Test sur {len(selected_llms)} LLMs..."):
+            try:
+                st.session_state["single_results"] = run_single_question(
+                    custom_q.strip(), selected_llms)
+                st.session_state["single_prompt"] = custom_q.strip()
+            except Exception as e:
+                st.error(f"Erreur : {e}")
 
-# ── SCORES PAR CATÉGORIE ───────────────────────────────────────────────────────
-st.markdown("### 📊 Score par catégorie")
-score_cat = df.groupby("category")["score_visibilite"].mean().sort_values(ascending=True).reset_index()
-score_cat.columns = ["Catégorie", "Score"]
-fig_cat = px.bar(score_cat, x="Score", y="Catégorie", orientation="h",
-                  text=score_cat["Score"].apply(lambda s: f"{s:.0f}"),
-                  color="Score", color_continuous_scale=["#ef4444", "#f59e0b", "#22c55e"],
-                  range_color=[0, 100])
-fig_cat.update_traces(textposition="outside")
-fig_cat.update_layout(height=max(280, len(score_cat) * 38), coloraxis_showscale=False,
-                       xaxis=dict(range=[0, 115]), yaxis_title=None,
-                       margin=dict(t=10, b=10, l=10, r=60), paper_bgcolor="rgba(0,0,0,0)")
-st.plotly_chart(fig_cat, use_container_width=True)
+    if st.session_state.get("single_results"):
+        st.markdown(
+            f"**Résultats pour :** *{st.session_state.get('single_prompt', '')}*")
+        for r in st.session_state["single_results"]:
+            icon = "✅" if r["cited"] else "❌"
+            score_color = ("#22c55e" if r["score"] >= 60
+                           else "#f59e0b" if r["score"] >= 30 else "#ef4444")
+            with st.expander(
+                f"{icon} **{r['llm']}** — "
+                f"Score : {r['score']}/100 · {r['position']} · {r['tonalite']}"):
+                if r["recommandation"]:
+                    st.markdown(
+                        f'<div class="rec-card"><strong>💡 Recommandation GEO :</strong> '
+                        f'{r["recommandation"]}</div>', unsafe_allow_html=True)
+                if r["response"]:
+                    st.markdown("**Réponse complète :**")
+                    st.markdown(
+                        f"> {r['response'][:700]}"
+                        f"{'...' if len(r['response']) > 700 else ''}")
 
-st.divider()
-
-
-# ── PART DE VOIX ───────────────────────────────────────────────────────────────
-if all_comp:
-    st.markdown("### 🎯 Part de voix — RougeGorge vs concurrents")
-    comp_counts = pd.Series(all_comp).value_counts().reset_index()
-    comp_counts.columns = ["Marque", "Citations"]
-    rg_row = pd.DataFrame([{"Marque": "🌹 RougeGorge", "Citations": mentions}])
-    comp_chart = pd.concat([rg_row, comp_counts], ignore_index=True).sort_values("Citations")
-    comp_chart["type"] = comp_chart["Marque"].apply(
-        lambda x: "RougeGorge" if "RougeGorge" in x else "Concurrent")
-    fig_comp = px.bar(comp_chart, x="Citations", y="Marque", orientation="h", text="Citations",
-                       color="type", color_discrete_map={"RougeGorge": BRAND_COLOR, "Concurrent": "#cbd5e1"})
-    fig_comp.update_traces(textposition="outside")
-    fig_comp.update_layout(height=max(300, len(comp_chart) * 34), showlegend=False,
-                            xaxis_title="Citations", yaxis_title=None,
-                            margin=dict(t=10, b=10, l=10, r=60), paper_bgcolor="rgba(0,0,0,0)")
-    st.plotly_chart(fig_comp, use_container_width=True)
     st.divider()
 
+    # ── 3. Sélection des questions ─────────────────────────────────────────────
+    st.markdown("### ✅ Sélection des questions")
+    st.caption("Choisis les questions à inclure dans le prochain benchmark")
 
-# ── TABLEAU DÉTAILLÉ ───────────────────────────────────────────────────────────
-st.markdown("### 📋 Résultats détaillés")
+    pool = st.session_state["prompts_pool"]
+    n_total = len(pool)
+    n_selected_q = int(pool["selected"].sum()) if not pool.empty else 0
 
-cf1, cf2, cf3, cf4 = st.columns(4)
-with cf1: f_llm = st.selectbox("IA", ["Tous"] + available_llms)
-with cf2: f_cat = st.selectbox("Catégorie", ["Toutes"] + sorted(df["category"].dropna().unique().tolist()))
-with cf3: f_ton = st.selectbox("Tonalité", ["Toutes", "positive", "neutre", "negative"])
-with cf4: only_rg = st.checkbox("Seulement où RG est citée")
+    st.markdown(
+        f'<p class="q-count">'
+        f'<strong>{n_selected_q}</strong> / {n_total} questions sélectionnées'
+        f'</p>', unsafe_allow_html=True)
 
-filtered = df.copy()
-if f_llm  != "Tous":   filtered = filtered[filtered["llm"]      == f_llm]
-if f_cat  != "Toutes": filtered = filtered[filtered["category"] == f_cat]
-if f_ton  != "Toutes": filtered = filtered[filtered["tonalite"] == f_ton]
-if only_rg:            filtered = filtered[filtered["rougegorge_mentionnee"] == True]
+    cs1, cs2, cs3, cs4 = st.columns([1, 1, 2, 1])
+    with cs1:
+        if st.button("☑ Tout sélectionner", use_container_width=True):
+            st.session_state["prompts_pool"]["selected"] = True
+            st.rerun()
+    with cs2:
+        if st.button("☐ Tout désélectionner", use_container_width=True):
+            st.session_state["prompts_pool"]["selected"] = False
+            st.rerun()
+    with cs4:
+        if st.button("💾 Sauvegarder CSV", use_container_width=True):
+            save_df = pool[["prompt", "category"]].copy()
+            save_df.to_csv("prompts.csv", index=False, encoding="utf-8")
+            st.success("prompts.csv mis à jour !")
 
-cols = [c for c in ["llm", "category", "prompt", "score_visibilite", "position_citation",
-                     "rougegorge_mentionnee", "tonalite", "concurrents_mentionnes", "recommandation"]
+    if not pool.empty:
+        edited = st.data_editor(
+            pool[["selected", "category", "prompt"]].reset_index(drop=True),
+            column_config={
+                "selected": st.column_config.CheckboxColumn(
+                    "✓", width="small", default=True),
+                "category": st.column_config.SelectboxColumn(
+                    "Catégorie", options=CATEGORIES, width="medium"),
+                "prompt": st.column_config.TextColumn(
+                    "Question", width="large"),
+            },
+            hide_index=True,
+            use_container_width=True,
+            height=min(560, max(200, len(pool) * 40 + 60)),
+            num_rows="dynamic",
+            key="pool_editor",
+        )
+        if edited is not None:
+            clean = edited.dropna(subset=["prompt"])
+            clean = clean[clean["prompt"].str.strip() != ""]
+            clean["selected"] = clean["selected"].fillna(True)
+            clean["category"] = clean["category"].fillna("autre")
+            st.session_state["prompts_pool"] = clean.reset_index(drop=True)
+    else:
+        st.info("Pool vide — génère des questions tendance ou ajoute-en manuellement.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ONGLET DASHBOARD
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_dash:
+    DATA_FILE = "data/analyzed_results.csv"
+    if "df" in st.session_state:
+        df = st.session_state["df"]
+    elif os.path.exists(DATA_FILE):
+        df = pd.read_csv(DATA_FILE)
+    else:
+        st.info(
+            "Aucun résultat pour l'instant.  \n"
+            "➡️ Configure tes questions dans l'onglet **❓ Questions**, "
+            "puis clique sur **🚀 Lancer le benchmark** dans le menu à gauche.")
+        st.stop()
+
+    if df.empty:
+        st.warning("Le fichier de résultats est vide.")
+        st.stop()
+
+    available_llms = sorted(df["llm"].unique().tolist()) if "llm" in df.columns else []
+    last_date = df["date"].max() if "date" in df.columns else ""
+    st.caption(
+        f"Dernière analyse : {last_date} · "
+        f"{len(df)} réponses · {' · '.join(available_llms)}")
+    st.divider()
+
+    # ── KPIs ──────────────────────────────────────────────────────────────────
+    score_moyen = df["score_visibilite"].mean()
+    mentions    = int(df["rougegorge_mentionnee"].sum())
+    pct         = (mentions / len(df)) * 100
+    positives   = int((df["tonalite"] == "positive").sum())
+
+    all_comp = []
+    for e in df["concurrents_mentionnes"].dropna():
+        for c in str(e).split(","):
+            c = c.strip()
+            if c: all_comp.append(c)
+
+    total_mentions = mentions + len(all_comp)
+    sov      = round((mentions / total_mentions * 100) if total_mentions > 0 else 0, 1)
+    top_comp = pd.Series(all_comp).value_counts().index[0] if all_comp else "—"
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    with k1: st.metric("Score global",       f"{score_moyen:.1f} / 100")
+    with k2: st.metric("Taux de citation",   f"{pct:.0f}%", f"{mentions} / {len(df)}")
+    with k3: st.metric("Share of voice",     f"{sov}%", "vs concurrents")
+    with k4: st.metric("Tonalité positive",  f"{positives} réponses")
+    with k5: st.metric("Concurrent n°1",     top_comp)
+    st.divider()
+
+    # ── Comparaison LLMs ──────────────────────────────────────────────────────
+    if len(available_llms) > 1:
+        st.markdown("### 🤖 Comparaison entre les IA")
+        llm_stats = (
+            df.groupby("llm")
+              .agg(
+                  score_moyen=("score_visibilite", "mean"),
+                  taux_citation=("rougegorge_mentionnee",
+                                 lambda x: round(x.mean() * 100, 1)))
+              .reset_index()
+              .sort_values("score_moyen", ascending=False))
+        cmap = {r["llm"]: LLM_COLORS.get(r["llm"], "#888") for _, r in llm_stats.iterrows()}
+
+        ca, cb = st.columns(2)
+        with ca:
+            st.markdown("**Score moyen de visibilité**")
+            fig = px.bar(llm_stats, x="llm", y="score_moyen", text="score_moyen",
+                         color="llm", color_discrete_map=cmap)
+            fig.update_traces(texttemplate="%{text:.1f}", textposition="outside")
+            fig.update_layout(height=280, showlegend=False, yaxis_range=[0, 115],
+                              xaxis_title=None, yaxis_title="Score / 100",
+                              margin=dict(t=20, b=10),
+                              paper_bgcolor="rgba(0,0,0,0)",
+                              font=dict(family="Poppins, sans-serif"))
+            st.plotly_chart(fig, use_container_width=True)
+        with cb:
+            st.markdown("**Taux de citation de RougeGorge**")
+            fig2 = px.bar(llm_stats, x="llm", y="taux_citation", text="taux_citation",
+                          color="llm", color_discrete_map=cmap)
+            fig2.update_traces(texttemplate="%{text:.0f}%", textposition="outside")
+            fig2.update_layout(height=280, showlegend=False, yaxis_range=[0, 115],
+                               xaxis_title=None, yaxis_title="% prompts",
+                               margin=dict(t=20, b=10),
+                               paper_bgcolor="rgba(0,0,0,0)",
+                               font=dict(family="Poppins, sans-serif"))
+            st.plotly_chart(fig2, use_container_width=True)
+
+        st.markdown("**Heatmap — score par IA et par catégorie**")
+        heat  = df.groupby(["category", "llm"])["score_visibilite"].mean().reset_index()
+        pivot = heat.pivot(index="category", columns="llm",
+                           values="score_visibilite").fillna(0)
+        fig_h = px.imshow(
+            pivot, color_continuous_scale=["#fee2e2", "#fef3c7", "#dcfce7"],
+            zmin=0, zmax=100, text_auto=".0f", aspect="auto")
+        fig_h.update_layout(height=max(250, len(pivot) * 36),
+                             margin=dict(t=20, b=20),
+                             paper_bgcolor="rgba(0,0,0,0)",
+                             coloraxis_showscale=False,
+                             font=dict(family="Poppins, sans-serif"))
+        st.plotly_chart(fig_h, use_container_width=True)
+        st.divider()
+
+    # ── Jauge + Tonalité ───────────────────────────────────────────────────────
+    cg, ct = st.columns(2)
+    with cg:
+        st.markdown("**Score global**")
+        color = ("#22c55e" if score_moyen >= 60
+                 else "#f59e0b" if score_moyen >= 30 else "#ef4444")
+        fig_gauge = go.Figure(go.Indicator(
+            mode="gauge+number", value=round(score_moyen, 1),
+            number={"suffix": " / 100", "font": {"size": 28, "color": color,
+                                                  "family": "Poppins, sans-serif"}},
+            gauge={"axis": {"range": [0, 100]},
+                   "bar": {"color": color, "thickness": 0.3},
+                   "steps": [{"range": [0, 30],  "color": "#fee2e2"},
+                              {"range": [30, 60], "color": "#fef3c7"},
+                              {"range": [60, 100],"color": "#dcfce7"}]}))
+        fig_gauge.update_layout(height=200, margin=dict(t=30, b=10, l=20, r=20),
+                                 paper_bgcolor="rgba(0,0,0,0)",
+                                 font=dict(family="Poppins, sans-serif"))
+        st.plotly_chart(fig_gauge, use_container_width=True)
+    with ct:
+        st.markdown("**Tonalité des réponses**")
+        ton = df["tonalite"].value_counts().reset_index()
+        ton.columns = ["Tonalité", "Nb"]
+        fig_ton = px.pie(ton, values="Nb", names="Tonalité", hole=0.55,
+                         color="Tonalité",
+                         color_discrete_map={"positive": "#22c55e",
+                                             "neutre": "#94a3b8",
+                                             "negative": "#ef4444"})
+        fig_ton.update_layout(height=200, margin=dict(t=10, b=10, l=10, r=10),
+                               legend=dict(orientation="h", y=-0.15),
+                               paper_bgcolor="rgba(0,0,0,0)",
+                               font=dict(family="Poppins, sans-serif"))
+        st.plotly_chart(fig_ton, use_container_width=True)
+    st.divider()
+
+    # ── Scores par catégorie ───────────────────────────────────────────────────
+    st.markdown("### 📊 Score par catégorie")
+    score_cat = (df.groupby("category")["score_visibilite"]
+                   .mean().sort_values(ascending=True).reset_index())
+    score_cat.columns = ["Catégorie", "Score"]
+    fig_cat = px.bar(score_cat, x="Score", y="Catégorie", orientation="h",
+                     text=score_cat["Score"].apply(lambda s: f"{s:.0f}"),
+                     color="Score",
+                     color_continuous_scale=["#ef4444", "#f59e0b", "#22c55e"],
+                     range_color=[0, 100])
+    fig_cat.update_traces(textposition="outside")
+    fig_cat.update_layout(
+        height=max(280, len(score_cat) * 40), coloraxis_showscale=False,
+        xaxis=dict(range=[0, 120]), yaxis_title=None,
+        margin=dict(t=10, b=10, l=10, r=60),
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Poppins, sans-serif"))
+    st.plotly_chart(fig_cat, use_container_width=True)
+    st.divider()
+
+    # ── Part de voix ───────────────────────────────────────────────────────────
+    if all_comp:
+        st.markdown("### 🎯 Part de voix — RougeGorge vs concurrents")
+        comp_counts = pd.Series(all_comp).value_counts().reset_index()
+        comp_counts.columns = ["Marque", "Citations"]
+        rg_row = pd.DataFrame([{"Marque": "🌹 RougeGorge", "Citations": mentions}])
+        comp_chart = (pd.concat([rg_row, comp_counts], ignore_index=True)
+                        .sort_values("Citations"))
+        comp_chart["type"] = comp_chart["Marque"].apply(
+            lambda x: "RougeGorge" if "RougeGorge" in x else "Concurrent")
+        fig_comp = px.bar(comp_chart, x="Citations", y="Marque", orientation="h",
+                          text="Citations", color="type",
+                          color_discrete_map={"RougeGorge": BRAND_COLOR,
+                                              "Concurrent": "#cbd5e1"})
+        fig_comp.update_traces(textposition="outside")
+        fig_comp.update_layout(
+            height=max(300, len(comp_chart) * 36), showlegend=False,
+            xaxis_title="Citations", yaxis_title=None,
+            margin=dict(t=10, b=10, l=10, r=60),
+            paper_bgcolor="rgba(0,0,0,0)",
+            font=dict(family="Poppins, sans-serif"))
+        st.plotly_chart(fig_comp, use_container_width=True)
+        st.divider()
+
+    # ── Tableau détaillé ───────────────────────────────────────────────────────
+    st.markdown("### 📋 Résultats détaillés")
+    tf1, tf2, tf3, tf4 = st.columns(4)
+    with tf1: f_llm  = st.selectbox("IA",        ["Tous"] + available_llms)
+    with tf2: f_cat  = st.selectbox("Catégorie", ["Toutes"] + sorted(
+        df["category"].dropna().unique().tolist()))
+    with tf3: f_ton  = st.selectbox("Tonalité",  ["Toutes", "positive", "neutre", "negative"])
+    with tf4: only_rg = st.checkbox("Seulement où RG est citée")
+
+    filtered = df.copy()
+    if f_llm   != "Tous":   filtered = filtered[filtered["llm"]      == f_llm]
+    if f_cat   != "Toutes": filtered = filtered[filtered["category"] == f_cat]
+    if f_ton   != "Toutes": filtered = filtered[filtered["tonalite"] == f_ton]
+    if only_rg:             filtered = filtered[filtered["rougegorge_mentionnee"] == True]
+
+    cols_show = [c for c in [
+        "llm", "category", "prompt", "score_visibilite", "position_citation",
+        "rougegorge_mentionnee", "tonalite", "concurrents_mentionnes", "recommandation"]
         if c in filtered.columns]
-rename = {"llm": "IA", "category": "Catégorie", "prompt": "Prompt", "score_visibilite": "Score",
-          "position_citation": "Position RG", "rougegorge_mentionnee": "RG citée ?",
-          "tonalite": "Tonalité", "concurrents_mentionnes": "Concurrents", "recommandation": "Recommandation GEO"}
-display = filtered[cols].rename(columns=rename)
+    rename = {
+        "llm": "IA", "category": "Catégorie", "prompt": "Prompt",
+        "score_visibilite": "Score", "position_citation": "Position RG",
+        "rougegorge_mentionnee": "RG citée ?", "tonalite": "Tonalité",
+        "concurrents_mentionnes": "Concurrents", "recommandation": "Recommandation GEO",
+    }
+    display = filtered[cols_show].rename(columns=rename)
 
-def color_score(val):
-    try:
-        v = float(val)
-        if v >= 60: return "background-color:#dcfce7"
-        if v >= 30: return "background-color:#fef3c7"
-        return "background-color:#fee2e2"
-    except Exception:
-        return ""
+    def color_score(val):
+        try:
+            v = float(val)
+            if v >= 60: return "background-color:#dcfce7"
+            if v >= 30: return "background-color:#fef3c7"
+            return "background-color:#fee2e2"
+        except Exception:
+            return ""
 
-st.dataframe(
-    display.style.map(color_score, subset=["Score"]) if "Score" in display.columns else display,
-    use_container_width=True, hide_index=True, height=380
-)
-st.download_button("⬇️ Télécharger CSV", data=df.to_csv(index=False, encoding="utf-8"),
-                   file_name=f"rougegorge_visibility_{datetime.now().strftime('%Y%m%d')}.csv",
-                   mime="text/csv")
-st.divider()
+    st.dataframe(
+        display.style.map(color_score, subset=["Score"]) if "Score" in display.columns
+        else display,
+        use_container_width=True, hide_index=True, height=380)
+    st.download_button(
+        "⬇️ Télécharger CSV",
+        data=df.to_csv(index=False, encoding="utf-8"),
+        file_name=f"rougegorge_visibility_{datetime.now().strftime('%Y%m%d')}.csv",
+        mime="text/csv")
+    st.divider()
 
+    # ── Recommandations ────────────────────────────────────────────────────────
+    st.markdown("### 💡 Recommandations GEO prioritaires")
+    recs = [r for r in df["recommandation"].dropna().unique()
+            if r and r != "Erreur d'analyse"]
+    for i, rec in enumerate(recs[:6], 1):
+        st.markdown(
+            f'<div class="rec-card"><strong>{i}.</strong> {rec}</div>',
+            unsafe_allow_html=True)
+    st.divider()
 
-# ── RECOMMANDATIONS ────────────────────────────────────────────────────────────
-st.markdown("### 💡 Recommandations SEO / GEO prioritaires")
-recs = [r for r in df["recommandation"].dropna().unique() if r and r != "Erreur d'analyse"]
-for i, rec in enumerate(recs[:6], 1):
-    st.markdown(f'<div class="rec-card"><strong>{i}.</strong> {rec}</div>', unsafe_allow_html=True)
-
-st.divider()
-
-
-# ── SUGGESTIONS ────────────────────────────────────────────────────────────────
-st.markdown("### 🔬 Idées pour aller plus loin")
-suggestions = [
-    ("📅 Suivi hebdomadaire",       "Relancer chaque semaine pour mesurer l'impact de tes actions GEO dans le temps."),
-    ("🌍 Multi-langue",             "Tester en anglais, néerlandais, espagnol pour mesurer la visibilité internationale."),
-    ("📍 Prompts géolocalisés",     "Ajouter 'à Paris', 'en Belgique', 'à Lyon' pour mesurer la visibilité locale."),
-    ("🎯 Requêtes de niche",        "Lingerie de mariage, post-mastectomie, grandes tailles, slow fashion..."),
-    ("🗣️ Prompts conversationnels", "Formulations naturelles : 'j'ai besoin d'un soutien-gorge confortable'..."),
-    ("⭐ Réputation & avis",        "Demander 'quelle marque a les meilleurs avis ?' pour mesurer l'association RG ↔ satisfaction."),
-    ("🛍️ Par type de produit",      "Segmenter : soutiens-gorge, culottes, nuisettes, bain, sport, maternité."),
-    ("📰 Contenu GEO ciblé",        "Créer des pages optimisées pour les requêtes où RG est absente des réponses IA."),
-]
-col_s1, col_s2 = st.columns(2)
-for i, (titre, desc) in enumerate(suggestions):
-    with (col_s1 if i % 2 == 0 else col_s2):
-        st.markdown(f'<div class="suggest-card"><div class="suggest-title">{titre}</div>'
-                    f'<div class="suggest-desc">{desc}</div></div>', unsafe_allow_html=True)
+    # ── Suggestions ────────────────────────────────────────────────────────────
+    st.markdown("### 🔬 Idées pour aller plus loin")
+    suggestions = [
+        ("📅 Suivi hebdomadaire",
+         "Relancer chaque semaine pour mesurer l'impact de tes actions GEO dans le temps."),
+        ("🌍 Multi-langue",
+         "Tester en anglais, néerlandais, espagnol pour mesurer la visibilité internationale."),
+        ("📍 Prompts géolocalisés",
+         "Ajouter 'à Paris', 'en Belgique', 'à Lyon' pour mesurer la visibilité locale."),
+        ("🎯 Requêtes de niche",
+         "Lingerie de mariage, post-mastectomie, grandes tailles, slow fashion..."),
+        ("🗣️ Prompts conversationnels",
+         "Formulations naturelles : 'j'ai besoin d'un soutien-gorge confortable'..."),
+        ("⭐ Réputation & avis",
+         "Demander 'quelle marque a les meilleurs avis ?' pour mesurer l'association RG ↔ satisfaction."),
+        ("🛍️ Par type de produit",
+         "Segmenter : soutiens-gorge, culottes, nuisettes, bain, sport, maternité."),
+        ("📰 Contenu GEO ciblé",
+         "Créer des pages optimisées pour les requêtes où RG est absente des réponses IA."),
+    ]
+    cs1, cs2 = st.columns(2)
+    for i, (titre, desc) in enumerate(suggestions):
+        with (cs1 if i % 2 == 0 else cs2):
+            st.markdown(
+                f'<div class="suggest-card">'
+                f'<div class="suggest-title">{titre}</div>'
+                f'<div class="suggest-desc">{desc}</div>'
+                f'</div>', unsafe_allow_html=True)
