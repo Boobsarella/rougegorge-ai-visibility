@@ -190,11 +190,13 @@ def run_llm(prompt, llm):
 
 # ── Analyse avec Claude Haiku ──────────────────────────────────────────────────
 def analyze_response(prompt, response, competitors, client):
+    # Tronquer pour éviter des réponses trop longues qui font échouer le parsing
+    response_trunc = response[:2500] + ("…[tronqué]" if len(response) > 2500 else "")
     system = f"""Tu es un expert en visibilité de marque dans les réponses IA.
 Tu analyses des réponses pour mesurer la présence de RougeGorge.
 Tu réponds UNIQUEMENT en JSON valide. Concurrents surveillés : {', '.join(competitors)}"""
     request = f"""Question : {prompt}
-Réponse : {response}
+Réponse : {response_trunc}
 
 JSON :
 {{
