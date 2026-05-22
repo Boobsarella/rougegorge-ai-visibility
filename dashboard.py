@@ -243,18 +243,19 @@ def run_single_question(prompt, selected_llms):
     results, prog = [], st.progress(0)
     for i, llm in enumerate(selected_llms):
         prog.progress((i + 1) / len(selected_llms), text=f"Test sur {llm['name']}...")
+        error_msg = ""
         try:
             answer = (query_claude(prompt, llm["model"], claude_client)
                       if llm["source"] == "anthropic"
                       else query_openai(prompt, llm["model"], openai_client))
         except Exception as e:
             answer = ""
-            st.warning(f"{llm['name']} : {e}")
+            error_msg = str(e)
         analysis = (analyze_response(prompt, answer, competitors_list, claude_client)
                     if answer else
                     {"rougegorge_mentionnee": False, "position_citation": "absente",
                      "concurrents_mentionnes": [], "tonalite": "neutre",
-                     "score_visibilite": 0, "recommandation": "Erreur"})
+                     "score_visibilite": 0, "recommandation": ""})
         results.append({
             "llm":            llm["name"],
             "score":          analysis.get("score_visibilite", 0),
@@ -263,6 +264,7 @@ def run_single_question(prompt, selected_llms):
             "tonalite":       analysis.get("tonalite", "neutre"),
             "recommandation": analysis.get("recommandation", ""),
             "response":       answer,
+            "error":          error_msg,
         })
     prog.empty()
     return results
@@ -433,21 +435,41 @@ with tab_questions:
         st.markdown(
             f"**Résultats pour :** *{st.session_state.get('single_prompt', '')}*")
         for r in st.session_state["single_results"]:
-            icon = "✅" if r["cited"] else "❌"
             score_color = ("#22c55e" if r["score"] >= 60
                            else "#f59e0b" if r["score"] >= 30 else "#ef4444")
-            with st.expander(
-                f"{icon} **{r['llm']}** — "
-                f"Score : {r['score']}/100 · {r['position']} · {r['tonalite']}"):
-                if r["recommandation"]:
+            cited_label = "Citée" if r["cited"] else "Absente"
+            cited_color = "#16a34a" if r["cited"] else "#dc2626"
+
+            with st.container():
+                c_llm, c_score, c_status, c_pos, c_ton = st.columns([2.5, 1.2, 1.2, 1.5, 1.2])
+                with c_llm:
+                    st.markdown(f"**{r['llm']}**")
+                with c_score:
                     st.markdown(
-                        f'<div class="rec-card"><strong>💡 Recommandation GEO :</strong> '
-                        f'{r["recommandation"]}</div>', unsafe_allow_html=True)
-                if r["response"]:
-                    st.markdown("**Réponse complète :**")
+                        f'<span style="font-size:1.25em;font-weight:700;color:{score_color}">'
+                        f'{r["score"]}/100</span>', unsafe_allow_html=True)
+                with c_status:
                     st.markdown(
-                        f"> {r['response'][:700]}"
-                        f"{'...' if len(r['response']) > 700 else ''}")
+                        f'<span style="color:{cited_color};font-weight:600">'
+                        f'{cited_label}</span>', unsafe_allow_html=True)
+                with c_pos:
+                    st.caption(r["position"])
+                with c_ton:
+                    st.caption(r["tonalite"])
+
+                if r.get("error"):
+                    st.error(f"Erreur API : {r['error']}")
+                else:
+                    if r["recommandation"]:
+                        st.markdown(
+                            f'<div class="rec-card">💡 {r["recommandation"]}</div>',
+                            unsafe_allow_html=True)
+                    if r["response"]:
+                        with st.expander("Voir la réponse complète"):
+                            st.markdown(
+                                r["response"][:800]
+                                + ("..." if len(r["response"]) > 800 else ""))
+                st.divider()
 
     st.divider()
 
