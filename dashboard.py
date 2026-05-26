@@ -342,20 +342,51 @@ Score : 0=absente, 25=brièvement citée, 50=clairement citée, 75=bonne option,
                 "recommandation": "Erreur de parsing JSON"}
 
 
-# ── Génération de questions tendance ──────────────────────────────────────────
+# ── Génération de questions tendance (via recherche web réelle) ───────────────
 def generate_trending_questions(client, n=12):
-    r = client.messages.create(
-        model="claude-haiku-4-5-20251001", max_tokens=1200,
-        messages=[{"role": "user", "content": f"""Tu es expert en comportement consommateur lingerie, Europe 2026.
-Génère {n} questions authentiques que des gens posent aux IA pour trouver de la lingerie.
-Sois varié : cadeaux, occasions, tailles, confort, sport, prix, tendances, durabilité...
-Formule comme un vrai utilisateur — naturel, varié, pas toutes sur le même modèle.
+    """Utilise Claude Sonnet + web_search pour trouver ce que les gens demandent vraiment."""
+    prompt_text = f"""Recherche sur le web ce que les gens demandent vraiment aux IA et moteurs de recherche sur la lingerie en France et Belgique en 2026.
 
-Réponds UNIQUEMENT en JSON :
-{{"questions": [{{"prompt": "...", "category": "..."}}]}}
+Cherche sur plusieurs sources : Google Trends, Reddit (r/femalefashionadvice, r/Lingerie), forums beauté/mode francophones, questions suggérées Google, Quora, sites d'avis.
 
-Catégories possibles : decouverte | cadeau | confort | taille_plus | sport | nuit | comparaison | prix | occasion | boutique | mariage | tendance | durabilite"""}])
-    raw = r.content[0].text.strip()
+À partir de tes recherches, génère {n} questions authentiques — formule-les exactement comme un vrai utilisateur les poserait à une IA (naturel, conversationnel, varié).
+
+Pour chaque question, indique :
+- la question telle qu'elle serait posée
+- la catégorie
+- la source web où tu as observé ce type de recherche (ex : "Google Trends FR", "Reddit r/Lingerie", "forums Doctissimo", "suggestions Google")
+- le volume de recherche estimé : "élevé" (très fréquent), "moyen" (régulier), "niche" (spécifique)
+
+Réponds UNIQUEMENT en JSON valide :
+{{"questions": [
+  {{"prompt": "...", "category": "...", "source": "...", "volume": "élevé|moyen|niche"}}
+]}}
+
+Catégories : decouverte | cadeau | confort | taille_plus | sport | nuit | comparaison | prix | occasion | boutique | mariage | tendance | durabilite"""
+
+    messages = [{"role": "user", "content": prompt_text}]
+    texts = []
+    for _ in range(10):
+        r = client.messages.create(
+            model="claude-sonnet-4-6", max_tokens=2000,
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            messages=messages)
+        texts = [b.text for b in r.content
+                 if getattr(b, "type", "") == "text" and hasattr(b, "text")]
+        if r.stop_reason == "end_turn":
+            break
+        if r.stop_reason == "tool_use":
+            messages.append({"role": "assistant", "content": r.content})
+            tool_results = [
+                {"type": "tool_result", "tool_use_id": b.id, "content": []}
+                for b in r.content if getattr(b, "type", "") == "tool_use"
+            ]
+            if tool_results:
+                messages.append({"role": "user", "content": tool_results})
+        else:
+            break
+
+    raw = "\n".join(texts).strip()
     if "```" in raw:
         raw = raw.split("```")[1]
         if raw.startswith("json"): raw = raw[4:]
@@ -575,7 +606,7 @@ with tab_questions:
 
     # ── 1. Questions tendance ──────────────────────────────────────────────────
     st.markdown("### 🔥 Questions tendance")
-    st.caption("Génère les questions les plus posées aux IA sur la lingerie en 2026")
+    st.caption("Recherche web en temps réel — questions posées sur Google, Reddit, forums beauté (source + volume inclus)")
 
     cg1, cg2, cg3 = st.columns([1, 1, 3])
     with cg1:
@@ -596,14 +627,30 @@ with tab_questions:
     if st.session_state.get("trending"):
         trending = st.session_state["trending"]
         pool_prompts = set(st.session_state["prompts_pool"]["prompt"].tolist())
+        vol_color = {"élevé": "#16a34a", "moyen": "#d97706", "niche": "#7c3aed"}
         cols_t = st.columns(2)
         for i, q in enumerate(trending):
             with cols_t[i % 2]:
-                already = q["prompt"] in pool_prompts
+                already  = q["prompt"] in pool_prompts
+                source   = q.get("source", "")
+                volume   = q.get("volume", "")
+                vc       = vol_color.get(volume, "#6b7280")
+                vol_badge = (
+                    f'<span style="background:{vc}18;color:{vc};border:1px solid {vc}44;'
+                    f'font-size:0.68em;font-weight:600;padding:1px 8px;border-radius:20px;'
+                    f'text-transform:uppercase;letter-spacing:0.04em">{volume}</span>'
+                    if volume else "")
+                src_badge = (
+                    f'<span style="font-size:0.75em;color:#6b7280">🔍 {source}</span>'
+                    if source else "")
                 st.markdown(
                     f'<div class="trend-card">'
-                    f'<span class="trend-cat">{q.get("category","autre")}</span><br>'
-                    f'<span style="font-size:0.88em;line-height:1.5">{q["prompt"]}</span>'
+                    f'<div style="display:flex;gap:6px;align-items:center;margin-bottom:5px">'
+                    f'<span class="trend-cat">{q.get("category","autre")}</span>'
+                    f'{vol_badge}</div>'
+                    f'<div style="font-size:0.88em;line-height:1.5;margin-bottom:5px">'
+                    f'{q["prompt"]}</div>'
+                    f'{src_badge}'
                     f'</div>', unsafe_allow_html=True)
                 if already:
                     st.caption("✓ Déjà dans le pool")
@@ -611,7 +658,7 @@ with tab_questions:
                     if st.button("＋ Ajouter au pool", key=f"add_t_{i}",
                                  use_container_width=True):
                         new_row = pd.DataFrame([{
-                            "prompt": q["prompt"],
+                            "prompt":   q["prompt"],
                             "category": q.get("category", "autre"),
                             "selected": True,
                         }])
