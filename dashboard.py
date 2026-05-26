@@ -48,8 +48,7 @@ LLMS_OPENAI = [
     {"name": "GPT-5.4-mini", "model": "gpt-5.4-mini", "source": "openai"},
 ]
 LLMS_OPENAI_SEARCH = [
-    {"name": "GPT-4o Web",   "model": "gpt-4o-search-preview", "source": "openai"},
-    {"name": "GPT-5 Search", "model": "gpt-5-search-api",      "source": "openai"},
+    {"name": "GPT-5 Search", "model": "gpt-5-search-api", "source": "openai"},
 ]
 LLMS_PERPLEXITY = [
     {"name": "Perplexity Sonar Pro", "model": "sonar-pro", "source": "perplexity"},
@@ -124,8 +123,11 @@ input[type="text"], input[type="number"], input[type="search"], textarea,
 
 # ── Clés & clients ─────────────────────────────────────────────────────────────
 def get_secret(key):
-    if hasattr(st, "secrets") and key in st.secrets:
-        return st.secrets[key]
+    try:
+        if hasattr(st, "secrets") and key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass
     from dotenv import load_dotenv
     load_dotenv()
     val = os.getenv(key, "")
@@ -151,15 +153,19 @@ competitors_list = (
 )
 
 
-# ── Session state : pool de questions ─────────────────────────────────────────
+# ── Session state ──────────────────────────────────────────────────────────────
 if "prompts_pool" not in st.session_state:
-    if os.path.exists("prompts.csv"):
-        _df = pd.read_csv("prompts.csv")
-        _df["selected"] = True
-        st.session_state["prompts_pool"] = _df[["prompt", "category", "selected"]].copy()
-    else:
-        st.session_state["prompts_pool"] = pd.DataFrame(
-            columns=["prompt", "category", "selected"])
+    st.session_state["prompts_pool"] = pd.DataFrame(
+        columns=["prompt", "category", "selected"])
+if "pending_add_q" not in st.session_state:
+    st.session_state["pending_add_q"] = False
+
+# Forcer les cases LLM web=True / base=False (une seule fois par session)
+if "chk_defaults_v2" not in st.session_state:
+    _WEB = {llm["name"] for llm in LLMS_CLAUDE_WEB + LLMS_OPENAI_SEARCH + LLMS_PERPLEXITY}
+    for _l in LLMS_CLAUDE + LLMS_CLAUDE_WEB + LLMS_OPENAI + LLMS_OPENAI_SEARCH + LLMS_PERPLEXITY:
+        st.session_state[f"chk_{_l['name']}"] = _l["name"] in _WEB
+    st.session_state["chk_defaults_v2"] = True
 
 
 # ── Fonctions de requête ───────────────────────────────────────────────────────
@@ -224,6 +230,58 @@ def run_llm(prompt, llm):
 # ── Détection Python de RougeGorge (gratuit, avant tout appel API) ────────────
 def rg_in_text(text):
     return bool(re.search(r"rouge[\s\-]?gorge", text, re.IGNORECASE))
+
+
+def extract_rg_sentence(text):
+    """Première ligne/phrase contenant RougeGorge dans la réponse LLM."""
+    for line in text.split('\n'):
+        if re.search(r"rouge[\s\-]?gorge", line, re.IGNORECASE):
+            return line.strip()[:500]
+    return ""
+
+
+def save_to_history(prompt, results, category="autre"):
+    """Sauvegarde les résultats d'un test dans data/history.csv (append)."""
+    os.makedirs("data", exist_ok=True)
+    rows = [{
+        "date":           datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "prompt":         prompt,
+        "category":       category,
+        "llm":            r["llm"],
+        "score":          r["score"],
+        "cited":          r["cited"],
+        "position":       r["position"],
+        "tonalite":       r["tonalite"],
+        "competitors":    r.get("competitors_str", ""),
+        "recommandation": r.get("recommandation", ""),
+    } for r in results]
+    new_df    = pd.DataFrame(rows)
+    hist_file = "data/history.csv"
+    existing  = pd.read_csv(hist_file) if os.path.exists(hist_file) else pd.DataFrame()
+    pd.concat([existing, new_df], ignore_index=True).to_csv(
+        hist_file, index=False, encoding="utf-8")
+
+
+def save_benchmark_to_history(df):
+    """Sauvegarde les résultats d'un benchmark complet dans data/history.csv (append)."""
+    os.makedirs("data", exist_ok=True)
+    rows = [{
+        "date":           row.get("date", datetime.now().strftime("%Y-%m-%d %H:%M")),
+        "prompt":         row.get("prompt", ""),
+        "category":       row.get("category", "autre"),
+        "llm":            row.get("llm", ""),
+        "score":          row.get("score_visibilite", 0),
+        "cited":          row.get("rougegorge_mentionnee", False),
+        "position":       row.get("position_citation", "absente"),
+        "tonalite":       row.get("tonalite", "neutre"),
+        "competitors":    str(row.get("concurrents_mentionnes", "")),
+        "recommandation": row.get("recommandation", ""),
+    } for _, row in df.iterrows()]
+    new_df    = pd.DataFrame(rows)
+    hist_file = "data/history.csv"
+    existing  = pd.read_csv(hist_file) if os.path.exists(hist_file) else pd.DataFrame()
+    pd.concat([existing, new_df], ignore_index=True).to_csv(
+        hist_file, index=False, encoding="utf-8")
 
 
 # ── Analyse avec Claude Sonnet ────────────────────────────────────────────────
@@ -409,15 +467,21 @@ def run_single_question(prompt, selected_llms):
                     {"rougegorge_mentionnee": False, "position_citation": "absente",
                      "concurrents_mentionnes": [], "tonalite": "neutre",
                      "score_visibilite": 0, "recommandation": ""})
+        comp_list = analysis.get("concurrents_mentionnes", [])
+        if isinstance(comp_list, str):
+            comp_list = [c.strip() for c in comp_list.split(",") if c.strip()]
         results.append({
-            "llm":            llm["name"],
-            "score":          analysis.get("score_visibilite", 0),
-            "cited":          analysis.get("rougegorge_mentionnee", False),
-            "position":       analysis.get("position_citation", "absente"),
-            "tonalite":       analysis.get("tonalite", "neutre"),
-            "recommandation": analysis.get("recommandation", ""),
-            "response":       answer,
-            "error":          error_msg,
+            "llm":             llm["name"],
+            "score":           analysis.get("score_visibilite", 0),
+            "cited":           analysis.get("rougegorge_mentionnee", False),
+            "position":        analysis.get("position_citation", "absente"),
+            "tonalite":        analysis.get("tonalite", "neutre"),
+            "recommandation":  analysis.get("recommandation", ""),
+            "response":        answer,
+            "error":           error_msg,
+            "competitors":     comp_list,
+            "competitors_str": ", ".join(comp_list),
+            "rg_sentence":     extract_rg_sentence(answer) if answer else "",
         })
     prog.empty()
     return results
@@ -437,7 +501,7 @@ with st.sidebar:
 
     st.markdown("**Claude — base :**")
     for llm in LLMS_CLAUDE:
-        if st.checkbox(llm["name"], value=True, key=f"chk_{llm['name']}"):
+        if st.checkbox(llm["name"], value=False, key=f"chk_{llm['name']}"):
             selected_llms.append(llm)
     st.markdown("**Claude — recherche web 🔍 :**")
     for llm in LLMS_CLAUDE_WEB:
@@ -447,25 +511,12 @@ with st.sidebar:
     if openai_key:
         st.markdown("**OpenAI — base :**")
         for llm in LLMS_OPENAI:
-            if st.checkbox(llm["name"], value=True, key=f"chk_{llm['name']}"):
+            if st.checkbox(llm["name"], value=False, key=f"chk_{llm['name']}"):
                 selected_llms.append(llm)
         st.markdown("**OpenAI — recherche web 🔍 :**")
         for llm in LLMS_OPENAI_SEARCH:
             if st.checkbox(llm["name"], value=True, key=f"chk_{llm['name']}"):
                 selected_llms.append(llm)
-        with st.expander("Diagnostic OpenAI"):
-            if st.button("Lister mes modèles disponibles", use_container_width=True):
-                try:
-                    models = openai_client.models.list()
-                    gpt_ids = sorted(
-                        m.id for m in models.data
-                        if any(x in m.id for x in ("gpt", "o1", "o3", "o4")))
-                    if gpt_ids:
-                        st.code("\n".join(gpt_ids))
-                    else:
-                        st.info("Aucun modèle GPT trouvé.")
-                except Exception as e:
-                    st.error(str(e))
     else:
         st.caption("_Ajoute OPENAI_API_KEY pour tester GPT-5_")
 
@@ -497,6 +548,7 @@ with st.sidebar:
             df_new = run_benchmark_streamlit(sel_df, selected_llms)
             os.makedirs("data", exist_ok=True)
             df_new.to_csv("data/analyzed_results.csv", index=False, encoding="utf-8")
+            save_benchmark_to_history(df_new)
             st.session_state["df"] = df_new
             st.success(f"Score moyen : {df_new['score_visibilite'].mean():.1f}/100")
             st.rerun()
@@ -512,7 +564,8 @@ with st.sidebar:
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("## 🌹 RougeGorge — AI Visibility Monitor")
 
-tab_dash, tab_questions = st.tabs(["📊 Résultats & Analyses", "❓ Questions"])
+tab_dash, tab_questions, tab_history = st.tabs(
+    ["📊 Résultats & Analyses", "❓ Questions", "📜 Historique"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -584,80 +637,193 @@ with tab_questions:
                              type="primary",
                              disabled=not (custom_q or "").strip() or not selected_llms)
     with cb2:
-        add_btn = st.button("＋ Ajouter au pool", use_container_width=True,
-                            disabled=not (custom_q or "").strip())
+        if st.button("＋ Ajouter au pool", use_container_width=True,
+                     disabled=not (custom_q or "").strip()):
+            st.session_state["pending_add_q"]   = True
+            st.session_state["pending_add_text"] = custom_q.strip()
 
-    if add_btn and custom_q.strip():
-        # Demander la catégorie seulement au moment d'ajouter
+    if st.session_state.get("pending_add_q"):
+        _add_q       = st.session_state.get("pending_add_text", "")
         pool_prompts = set(st.session_state["prompts_pool"]["prompt"].tolist())
-        if custom_q.strip() in pool_prompts:
+        if _add_q in pool_prompts:
             st.warning("Cette question est déjà dans le pool.")
+            st.session_state["pending_add_q"] = False
         else:
-            add_cat = st.selectbox(
+            _add_cat = st.selectbox(
                 "Catégorie (pour organiser dans le pool)",
                 CATEGORIES, key="add_cat_select")
-            if st.button("Confirmer l'ajout", key="confirm_add", type="primary"):
+            if st.button("✓ Confirmer l'ajout", key="confirm_add", type="primary"):
                 new_row = pd.DataFrame([{
-                    "prompt": custom_q.strip(), "category": add_cat, "selected": True}])
+                    "prompt": _add_q, "category": _add_cat, "selected": True}])
                 st.session_state["prompts_pool"] = pd.concat(
                     [st.session_state["prompts_pool"], new_row], ignore_index=True)
-                st.success(f"Question ajoutée dans «{add_cat}»")
+                st.session_state["pending_add_q"] = False
+                st.success(f"✓ « {_add_q[:60]} » ajoutée dans « {_add_cat} »")
                 st.rerun()
 
     if test_btn and custom_q.strip() and selected_llms:
         with st.spinner(f"Test sur {len(selected_llms)} LLMs..."):
             try:
-                st.session_state["single_results"] = run_single_question(
-                    custom_q.strip(), selected_llms)
-                st.session_state["single_prompt"] = custom_q.strip()
+                _results = run_single_question(custom_q.strip(), selected_llms)
+                st.session_state["single_results"] = _results
+                st.session_state["single_prompt"]  = custom_q.strip()
+                save_to_history(custom_q.strip(), _results)
             except Exception as e:
                 st.error(f"Erreur : {e}")
 
     if st.session_state.get("single_results"):
-        st.markdown(
-            f"**Résultats pour :** *{st.session_state.get('single_prompt', '')}*")
+        sq = st.session_state.get("single_prompt", "")
+        st.markdown(f"**Résultats pour :** *{sq}*")
+
         for r in st.session_state["single_results"]:
             score_color = ("#22c55e" if r["score"] >= 60
                            else "#f59e0b" if r["score"] >= 30 else "#ef4444")
-            cited_label = "Citée" if r["cited"] else "Absente"
             cited_color = "#16a34a" if r["cited"] else "#dc2626"
+            cited_label = "Citée ✓"  if r["cited"] else "Absente ✗"
 
             with st.container():
-                c_llm, c_score, c_status, c_pos, c_ton = st.columns([2.5, 1.2, 1.2, 1.5, 1.2])
+                c_llm, c_score, c_status = st.columns([3, 1.5, 1.5])
                 with c_llm:
-                    st.markdown(f"**{r['llm']}**")
+                    st.markdown(f"#### {r['llm']}")
                 with c_score:
                     st.markdown(
-                        f'<span style="font-size:1.25em;font-weight:700;color:{score_color}">'
-                        f'{r["score"]}/100</span>', unsafe_allow_html=True)
+                        f'<div style="font-size:1.5em;font-weight:700;color:{score_color};'
+                        f'text-align:center;padding-top:8px">{r["score"]}/100</div>',
+                        unsafe_allow_html=True)
                 with c_status:
                     st.markdown(
-                        f'<span style="color:{cited_color};font-weight:600">'
-                        f'{cited_label}</span>', unsafe_allow_html=True)
-                with c_pos:
-                    st.caption(r["position"])
-                with c_ton:
-                    st.caption(r["tonalite"])
+                        f'<div style="color:{cited_color};font-weight:600;font-size:1.1em;'
+                        f'text-align:center;padding-top:10px">{cited_label}</div>',
+                        unsafe_allow_html=True)
 
                 if r.get("error"):
                     st.error(f"Erreur API : {r['error']}")
                 else:
-                    if r["recommandation"]:
+                    info_c = st.columns(3)
+                    info_c[0].caption(f"Position : **{r['position']}**")
+                    info_c[1].caption(f"Tonalité : **{r['tonalite']}**")
+                    info_c[2].caption(
+                        f"Concurrents cités : **{len(r.get('competitors', []))}**")
+
+                    rg_sent = r.get("rg_sentence", "")
+                    if r["cited"] and rg_sent:
+                        hl = re.sub(
+                            r"(rougegorge|rouge[\s\-]gorge)",
+                            r'<mark style="background:#fee2e2;border-radius:3px;'
+                            r'padding:1px 4px;font-weight:700">\1</mark>',
+                            rg_sent, flags=re.IGNORECASE)
                         st.markdown(
-                            f'<div class="rec-card">💡 {r["recommandation"]}</div>',
+                            f'<div style="background:#fff7f7;border-left:4px solid #DC3545;'
+                            f'border-radius:6px;padding:10px 14px;margin:6px 0;'
+                            f'font-size:0.88em;line-height:1.6">'
+                            f'<span style="font-size:0.72em;font-weight:600;color:#DC3545;'
+                            f'text-transform:uppercase;letter-spacing:0.05em">Passage cité</span>'
+                            f'<br>{hl}</div>',
                             unsafe_allow_html=True)
+                    elif not r["cited"]:
+                        st.markdown(
+                            '<div style="background:#fff5f5;border-left:4px solid #ef4444;'
+                            'border-radius:6px;padding:8px 14px;margin:6px 0;'
+                            'font-size:0.85em;color:#6b7280">'
+                            'RougeGorge n\'apparaît pas dans cette réponse.</div>',
+                            unsafe_allow_html=True)
+
+                    comps = r.get("competitors", [])
+                    if comps:
+                        tags = " ".join(
+                            f'<span style="background:#f1f5f9;border:1px solid #e2e8f0;'
+                            f'border-radius:12px;padding:2px 10px;font-size:0.8em;'
+                            f'margin:2px;display:inline-block">{c}</span>'
+                            for c in comps)
+                        st.markdown(
+                            f'<div style="margin:6px 0"><span style="font-size:0.72em;'
+                            f'font-weight:600;color:#6b7280;text-transform:uppercase;'
+                            f'letter-spacing:0.05em">Concurrents mentionnés : </span>'
+                            f'{tags}</div>',
+                            unsafe_allow_html=True)
+
+                    if r.get("recommandation"):
+                        st.markdown(
+                            f'<div class="rec-card">💡 <strong>Action GEO :</strong> '
+                            f'{r["recommandation"]}</div>',
+                            unsafe_allow_html=True)
+
                     if r["response"]:
                         with st.expander("Voir la réponse complète"):
-                            display_text = r["response"][:2500]
-                            if len(r["response"]) > 2500:
-                                display_text += "\n\n*[réponse tronquée à 2500 caractères]*"
-                            highlighted = re.sub(
+                            hl_full = re.sub(
                                 r"(rougegorge|rouge[\s\-]gorge)",
                                 r'<mark style="background:#fee2e2;border-radius:3px;'
                                 r'padding:1px 4px;font-weight:600">\1</mark>',
-                                display_text, flags=re.IGNORECASE)
-                            st.markdown(highlighted, unsafe_allow_html=True)
+                                r["response"], flags=re.IGNORECASE)
+                            st.markdown(hl_full, unsafe_allow_html=True)
                 st.divider()
+
+        # ── Synthèse globale ───────────────────────────────────────────────────
+        valid_r = [r for r in st.session_state["single_results"] if not r.get("error")]
+        if len(valid_r) > 1:
+            st.markdown("### 📊 Synthèse globale")
+            avg_score  = sum(r["score"] for r in valid_r) / len(valid_r)
+            cited_llms = [r["llm"] for r in valid_r if r["cited"]]
+            all_comps  = []
+            for r in valid_r:
+                all_comps.extend(r.get("competitors", []))
+            top_comps = (pd.Series(all_comps).value_counts().head(3).index.tolist()
+                         if all_comps else [])
+
+            sc_color = ("#22c55e" if avg_score >= 60
+                        else "#f59e0b" if avg_score >= 30 else "#ef4444")
+            sg1, sg2, sg3 = st.columns(3)
+            sg1.markdown(
+                f'<div style="text-align:center;padding:14px;background:#f8faff;'
+                f'border-radius:10px"><div style="font-size:2em;font-weight:700;'
+                f'color:{sc_color}">{avg_score:.0f}/100</div>'
+                f'<div style="font-size:0.78em;color:#888;text-transform:uppercase;'
+                f'letter-spacing:0.05em">Score moyen</div></div>',
+                unsafe_allow_html=True)
+            sg2.markdown(
+                f'<div style="text-align:center;padding:14px;background:#f8faff;'
+                f'border-radius:10px"><div style="font-size:2em;font-weight:700;'
+                f'color:#16a34a">{len(cited_llms)}/{len(valid_r)}</div>'
+                f'<div style="font-size:0.78em;color:#888;text-transform:uppercase;'
+                f'letter-spacing:0.05em">LLMs citant RG</div></div>',
+                unsafe_allow_html=True)
+            sg3.markdown(
+                f'<div style="text-align:center;padding:14px;background:#f8faff;'
+                f'border-radius:10px"><div style="font-size:1em;font-weight:600;'
+                f'color:#374151;padding-top:4px">{ " · ".join(top_comps) if top_comps else "—" }'
+                f'</div><div style="font-size:0.78em;color:#888;text-transform:uppercase;'
+                f'letter-spacing:0.05em;margin-top:4px">Concurrents dominants</div></div>',
+                unsafe_allow_html=True)
+
+            st.markdown("#### 🎯 Plan d'action")
+            if avg_score < 30:
+                st.markdown(
+                    '<div class="rec-card">🔴 <strong>Visibilité critique</strong> — '
+                    'RougeGorge est quasi absente des réponses IA sur cette requête. '
+                    'Priorité : créer du contenu optimisé GEO ciblant exactement cette question, '
+                    'avec des données factuelles citables (tailles, prix, points de vente).</div>',
+                    unsafe_allow_html=True)
+            elif avg_score < 60:
+                st.markdown(
+                    '<div class="rec-card">🟡 <strong>Visibilité partielle</strong> — '
+                    'RougeGorge apparaît dans certains LLMs mais pas tous. '
+                    'Renforcer la présence web (avis, articles, fiches produits détaillées) '
+                    'pour que davantage d\'IA l\'associent à cette requête.</div>',
+                    unsafe_allow_html=True)
+            else:
+                st.markdown(
+                    '<div class="rec-card">🟢 <strong>Bonne visibilité</strong> — '
+                    'RougeGorge est bien présente. Objectif : viser la position '
+                    '"première citée" dans les LLMs où elle apparaît encore "parmi d\'autres".</div>',
+                    unsafe_allow_html=True)
+
+            recs_uniq = list({r["recommandation"] for r in valid_r
+                              if r.get("recommandation") and r["recommandation"] not in
+                              ("", "Erreur d'analyse", "Erreur de requête")})
+            if recs_uniq:
+                st.markdown("**Recommandations par IA :**")
+                for rec in recs_uniq[:5]:
+                    st.markdown(f"- {rec}")
 
     # ── Articles de blog suggérés ──────────────────────────────────────────────
     if st.session_state.get("single_results"):
@@ -704,59 +870,19 @@ with tab_questions:
 
     st.divider()
 
-    # ── 3. Sélection des questions ─────────────────────────────────────────────
-    st.markdown("### ✅ Sélection des questions")
-    st.caption("Choisis les questions à inclure dans le prochain benchmark")
-
-    pool = st.session_state["prompts_pool"]
-    n_total = len(pool)
-    n_selected_q = int(pool["selected"].sum()) if not pool.empty else 0
-
-    st.markdown(
-        f'<p class="q-count">'
-        f'<strong>{n_selected_q}</strong> / {n_total} questions sélectionnées'
-        f'</p>', unsafe_allow_html=True)
-
-    cs1, cs2, cs3, cs4 = st.columns([1, 1, 2, 1])
-    with cs1:
-        if st.button("☑ Tout sélectionner", use_container_width=True):
-            st.session_state["prompts_pool"]["selected"] = True
-            st.rerun()
-    with cs2:
-        if st.button("☐ Tout désélectionner", use_container_width=True):
-            st.session_state["prompts_pool"]["selected"] = False
-            st.rerun()
-    with cs4:
-        if st.button("💾 Sauvegarder CSV", use_container_width=True):
-            save_df = pool[["prompt", "category"]].copy()
-            save_df.to_csv("prompts.csv", index=False, encoding="utf-8")
+    # ── 3. Pool de questions ────────────────────────────────────────────────────
+    _pool_now = st.session_state["prompts_pool"]
+    _n_pool   = len(_pool_now)
+    _n_sel    = int(_pool_now["selected"].sum()) if not _pool_now.empty else 0
+    st.markdown(f"**Pool actuel :** {_n_sel} questions sélectionnées sur {_n_pool} — "
+                f"lance le benchmark depuis le menu de gauche.")
+    cp1, cp2 = st.columns([1, 4])
+    with cp1:
+        if st.button("💾 Sauvegarder prompts.csv", use_container_width=True,
+                     disabled=_pool_now.empty):
+            _pool_now[["prompt", "category"]].to_csv(
+                "prompts.csv", index=False, encoding="utf-8")
             st.success("prompts.csv mis à jour !")
-
-    if not pool.empty:
-        edited = st.data_editor(
-            pool[["selected", "category", "prompt"]].reset_index(drop=True),
-            column_config={
-                "selected": st.column_config.CheckboxColumn(
-                    "✓", width="small", default=True),
-                "category": st.column_config.SelectboxColumn(
-                    "Catégorie", options=CATEGORIES, width="medium"),
-                "prompt": st.column_config.TextColumn(
-                    "Question", width="large"),
-            },
-            hide_index=True,
-            use_container_width=True,
-            height=min(560, max(200, len(pool) * 40 + 60)),
-            num_rows="dynamic",
-            key="pool_editor",
-        )
-        if edited is not None:
-            clean = edited.dropna(subset=["prompt"])
-            clean = clean[clean["prompt"].str.strip() != ""]
-            clean["selected"] = clean["selected"].fillna(True)
-            clean["category"] = clean["category"].fillna("autre")
-            st.session_state["prompts_pool"] = clean.reset_index(drop=True)
-    else:
-        st.info("Pool vide — génère des questions tendance ou ajoute-en manuellement.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1026,3 +1152,87 @@ with tab_dash:
                 f'<div class="suggest-title">{titre}</div>'
                 f'<div class="suggest-desc">{desc}</div>'
                 f'</div>', unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ONGLET HISTORIQUE
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_history:
+    HIST_FILE = "data/history.csv"
+    st.markdown("### 📜 Historique des tests")
+    st.caption("Toutes les questions testées via « Tester une question », avec dates et résultats")
+
+    if not os.path.exists(HIST_FILE):
+        st.info(
+            "Aucun historique pour l'instant.  \n"
+            "➡️ Utilise **Tester une question** dans l'onglet ❓ pour alimenter l'historique.")
+    else:
+        hist_df = pd.read_csv(HIST_FILE)
+        if hist_df.empty:
+            st.info("L'historique est vide.")
+        else:
+            # KPIs rapides
+            hk1, hk2, hk3, hk4 = st.columns(4)
+            hk1.metric("Tests effectués",    len(hist_df))
+            hk2.metric("Questions uniques",  hist_df["prompt"].nunique())
+            hk3.metric("Score moyen",        f"{hist_df['score'].mean():.1f}/100")
+            cited_pct = hist_df["cited"].mean() * 100 if "cited" in hist_df.columns else 0
+            hk4.metric("Taux de citation",   f"{cited_pct:.0f}%")
+            st.divider()
+
+            # Filtres
+            hf1, hf2, hf3 = st.columns(3)
+            with hf1:
+                h_llms = ["Tous"] + sorted(hist_df["llm"].dropna().unique().tolist())
+                h_llm  = st.selectbox("Filtrer par IA", h_llms, key="hist_llm")
+            with hf2:
+                h_cited = st.selectbox(
+                    "RougeGorge", ["Toutes", "Citée", "Absente"], key="hist_cited")
+            with hf3:
+                h_search = st.text_input(
+                    "Rechercher dans les questions", placeholder="mot-clé...",
+                    key="hist_search", label_visibility="collapsed")
+                if h_search:
+                    st.caption(f"Filtre : « {h_search} »")
+
+            h_filt = hist_df.copy()
+            if h_llm != "Tous":
+                h_filt = h_filt[h_filt["llm"] == h_llm]
+            if h_cited == "Citée":
+                h_filt = h_filt[h_filt["cited"] == True]
+            elif h_cited == "Absente":
+                h_filt = h_filt[h_filt["cited"] == False]
+            if h_search:
+                h_filt = h_filt[
+                    h_filt["prompt"].str.contains(h_search, case=False, na=False)]
+
+            h_filt = h_filt.sort_values("date", ascending=False)
+
+            def _color_score_h(val):
+                try:
+                    v = float(val)
+                    if v >= 60: return "background-color:#dcfce7"
+                    if v >= 30: return "background-color:#fef3c7"
+                    return "background-color:#fee2e2"
+                except Exception:
+                    return ""
+
+            rename_h = {
+                "date": "Date", "prompt": "Question", "category": "Catégorie",
+                "llm": "IA", "score": "Score", "cited": "RG citée",
+                "position": "Position", "tonalite": "Tonalité",
+                "competitors": "Concurrents", "recommandation": "Recommandation",
+            }
+            cols_h = [c for c in rename_h if c in h_filt.columns]
+            display_h = h_filt[cols_h].rename(columns=rename_h)
+
+            st.dataframe(
+                display_h.style.map(_color_score_h, subset=["Score"])
+                if "Score" in display_h.columns else display_h,
+                use_container_width=True, hide_index=True, height=450)
+
+            st.download_button(
+                "⬇️ Télécharger l'historique CSV",
+                data=hist_df.to_csv(index=False, encoding="utf-8"),
+                file_name=f"rougegorge_history_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv")
